@@ -145,7 +145,7 @@ function onFrame(buf){const v=new DataView(buf),magic=v.getUint32(0,true),a=v.ge
  if(a!==f0||b!==f1||!data||data.length!==t.length){f0=a;f1=b;peak=null;avg=null}
  data=Uint8Array.from(t);peak=peak?peak.map((p,i)=>Math.max(p,t[i])):Uint8Array.from(t);avg=avg?avg.map((p,i)=>!t[i]?p:!p?t[i]:p*0.8+t[i]*0.2):Float32Array.from(t);
  // Wide signals near -30 dBFS per bin already add up to ADC full scale.
- const w=Math.max(...t)/2-84.3>-30?'入力が強すぎます。ゲインを下げてください':'';if(w!==warn){warn=w;showErr()}redraw()}
+ const w=Math.max(...t)/2-84.3>-30?'ゲイン下げて':'';if(w!==warn){warn=w;showErr()}redraw()}
 function connect(){ws=new WebSocket('ws://'+location.hostname+':81/');ws.binaryType='arraybuffer';lastMsg=Date.now();
  ws.onmessage=e=>{lastMsg=Date.now();typeof e.data==='string'?onStatus(JSON.parse(e.data)):onFrame(e.data)};
  ws.onclose=()=>{$('st').textContent='再接続中';$('st').className='ng';setTimeout(connect,1000)}}
