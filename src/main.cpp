@@ -415,6 +415,17 @@ static void ws_task(void *) {
     }
 }
 
+/* DNS answers run in their own task: the synchronous WebServer in loop()
+ * can wait seconds on an idle connection, and phones joining the access
+ * point time out their DNS lookups (and the captive-portal check) when
+ * the answers wait behind it. */
+static void dns_task(void *) {
+    for (;;) {
+        dns.processNextRequest();
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+}
+
 void setup() {
     Serial.begin(115200);
     lock = xSemaphoreCreateMutex();
@@ -436,11 +447,11 @@ void setup() {
     sdr.begin(SDR_RX_PIN, SDR_TX_PIN, SDR_BAUD);
     xTaskCreatePinnedToCore(sweep_task, "sweep", 8192, nullptr, 2, nullptr, 0);
     xTaskCreatePinnedToCore(ws_task, "ws", 8192, nullptr, 3, nullptr, 1);
+    xTaskCreatePinnedToCore(dns_task, "dns", 4096, nullptr, 3, nullptr, 1);
     Serial.printf("AP %s  http://%s/\n", AP_SSID, WiFi.softAPIP().toString().c_str());
 }
 
 void loop() {
-    dns.processNextRequest();
     http.handleClient();
     delay(2);
 }
