@@ -74,7 +74,10 @@ bool SdrLink::spectrum(unsigned mhz, unsigned rate_code, unsigned n, unsigned dw
                        uint8_t *bins) {
     char cmd[64], line[96];
     snprintf(cmd, sizeof(cmd), "FREQ %u", mhz);
+    uint32_t t0 = millis();
     if (!command(cmd, nullptr, 0, 3000)) return false;
+    uint32_t t1 = millis();
+    tune_ms = t1 - t0;
     snprintf(cmd, sizeof(cmd), "SPEC %u 1 1 %u %u %u", dwell_ms, max_hold ? 1 : 0, rate_code, n);
     port_.printf("%s\n", cmd);
     if (!read_line(line, sizeof(line), 2000) || strncmp(line, "SPEC ", 5)) return false;
@@ -106,6 +109,7 @@ bool SdrLink::spectrum(unsigned mhz, unsigned rate_code, unsigned n, unsigned dw
         } else
             return false; /* out of step; the caller resynchronizes */
     }
+    measure_ms = millis() - t1;
     if (!frames) return false;
     for (unsigned j = 0; j < n; j++) bins[j] = max_hold ? sum[j] : (sum[j] + frames / 2) / frames;
     return true;

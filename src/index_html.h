@@ -68,7 +68,8 @@ const $=id=>document.getElementById(id),cv=$('cv'),ctx=cv.getContext('2d');
 const dbm=c=>c/2-84.3+(cfg.cal||0)/10;
 const shown=b=>((cfg.bands??17)>>BK.indexOf(b))&1;
 const trace=()=>cfg.avg&&avg?avg:data;
-function level(f){const t=trace();return !t||f<f0||f>=f1?null:dbm(t[Math.floor((f-f0)/(f1-f0)*t.length)])}
+// Code 0 means "not measured yet" (right after a span change).
+function level(f){const t=trace();if(!t||f<f0||f>=f1)return null;const v=t[Math.floor((f-f0)/(f1-f0)*t.length)];return v?dbm(v):null}
 function nearestCh(f){let b=null;for(const k of BK)BANDS[k].forEach((c,i)=>{const d=Math.abs(c-f);if(!b||d<b.d)b={d,t:k+(i+1)}});return b.d<=10?b.t:'-'}
 // ---- drawing, at most once per animation frame
 function redraw(){if(!queued){queued=true;requestAnimationFrame(()=>{queued=false;draw();renderMarkers()})}}
@@ -83,7 +84,7 @@ function draw(){
  let lane=0;for(const b of BK){if(!shown(b))continue;ctx.strokeStyle=BCOL[b]+'66';ctx.fillStyle=BCOL[b];
   BANDS[b].forEach((f,k)=>{if(f<f0||f>f1)return;const x=X(f);ctx.beginPath();ctx.moveTo(x,T);ctx.lineTo(x,T+ph);ctx.stroke();ctx.fillText(b+(k+1),x,T+(10+lane*10)*r)});lane++}
  const line=(t,col,a,b)=>{if(!t)return;ctx.strokeStyle=col;ctx.beginPath();const n=t.length;let first=true;
-  for(let i=0;i<n;i++){const f=a+(b-a)*(i+0.5)/n;if(f<f0||f>f1)continue;const x=X(f),y=Y(dbm(t[i]));first?ctx.moveTo(x,y):ctx.lineTo(x,y);first=false}ctx.stroke()};
+  for(let i=0;i<n;i++){const f=a+(b-a)*(i+0.5)/n;if(f<f0||f>f1||!t[i]){first=true;continue}const x=X(f),y=Y(dbm(t[i]));first?ctx.moveTo(x,y):ctx.lineTo(x,y);first=false}ctx.stroke()};
  if(noise)line(noise.t,'#9aa4b199',noise.a,noise.b);
  if(cfg.hold)line(peak,'#ff7b72',f0,f1);
  line(trace(),cfg.avg?'#79c0ff':'#f2cc60',f0,f1);
@@ -133,7 +134,7 @@ function onStatus(s){
  if(Date.now()-dispEdit<3000)for(const k of['hold','avg','ytop','yrange'])s[k]=cfg[k];const first=!cfg.start;if(cfg.rate!==s.rate||cfg.det!==s.det||cfg.gain!==s.gain){peak=null;avg=null}
  if(!s.noise)noise=null;cfg=s;if(first)fillForm(s);
  $('st').textContent=s.linked?'C5接続':'C5未接続';$('st').className=s.linked?'ok':'ng';
- $('info').textContent=`${s.start}-${s.stop}MHz ${s.steps}step ${s.sweep_ms}ms`;$('nst').textContent=s.noise?'保存済み':'';
+ $('info').textContent=`${s.start}-${s.stop}MHz ${s.steps}step ${s.sweep_ms}ms（切替${s.tune_ms} 測定${s.measure_ms}）`;$('nst').textContent=s.noise?'保存済み':'';
  gerr=s.error;showErr();if(s.error)$('gain').value=s.gain;
  if(s.gain_max)$('grange').textContent=`-1=自動、2〜${s.gain_max}（小さいほど強い電波向き、大きいほど弱い電波向き）`;placed()}
 // Errors and warnings share the header bar.
@@ -142,7 +143,7 @@ function onFrame(buf){const v=new DataView(buf),magic=v.getUint32(0,true),a=v.ge
  if(magic===0x3245534e){noise={a,b,t:Uint8Array.from(t)};redraw();return}
  if(magic!==0x31565046)return;
  if(a!==f0||b!==f1||!data||data.length!==t.length){f0=a;f1=b;peak=null;avg=null}
- data=Uint8Array.from(t);peak=peak?peak.map((p,i)=>Math.max(p,t[i])):Uint8Array.from(t);avg=avg?avg.map((p,i)=>p*0.8+t[i]*0.2):Float32Array.from(t);
+ data=Uint8Array.from(t);peak=peak?peak.map((p,i)=>Math.max(p,t[i])):Uint8Array.from(t);avg=avg?avg.map((p,i)=>!t[i]?p:!p?t[i]:p*0.8+t[i]*0.2):Float32Array.from(t);
  // Wide signals near -30 dBFS per bin already add up to ADC full scale.
  const w=Math.max(...t)/2-84.3>-30?'入力が強すぎます。ゲインを下げてください':'';if(w!==warn){warn=w;showErr()}redraw()}
 function connect(){ws=new WebSocket('ws://'+location.hostname+':81/');ws.binaryType='arraybuffer';lastMsg=Date.now();
