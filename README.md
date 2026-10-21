@@ -163,7 +163,8 @@ TX と RX はたすき掛けです。C5 は無線起動時に電流が増える�
 - `src/config.h`: Wi-Fi 名・パスワード、UART ピン、初回起動時のスパン
 - `src/sdr_link.*`: ESP-SDR の UART プロトコル（`SYNC`, `FREQ`, `SPEC`）クライアント
 - `src/main.cpp`: スイープ処理、設定とノイズの保存（NVS）、キャプティブポータル（DNS 53）、
-  Web サーバー (80)、WebSocket (81)
+  WebSocket (81)
+- `src/portal_http.*`: 画面を配信する小さな HTTP サーバー (80)。複数の接続を同時に扱う
 - `src/index_html.h`: スマホ用の画面（HTML/JavaScript）
 
 ## ライセンス

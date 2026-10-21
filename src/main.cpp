@@ -7,11 +7,11 @@
 #include <Arduino.h>
 #include <DNSServer.h>
 #include <Preferences.h>
-#include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <WiFi.h>
 #include "config.h"
 #include "index_html.h"
+#include "portal_http.h"
 #include "sdr_link.h"
 
 struct SweepConfig {
@@ -49,7 +49,6 @@ static double half_use_khz(unsigned plan) {
     return steps_plan[plan].half_khz;
 }
 
-static WebServer http(80);
 static WebSocketsServer ws(81);
 static DNSServer dns;
 static SdrLink sdr;
@@ -404,16 +403,8 @@ static void on_ws(uint8_t client, WStype_t type, uint8_t *payload, size_t length
     }
 }
 
-/* Captive portal: every DNS name resolves to us, and any unknown URL
- * (including the OS connectivity checks) redirects to the scanner page. */
-static void redirect_to_portal() {
-    http.sendHeader("Location", String("http://") + WiFi.softAPIP().toString() + "/", true);
-    http.send(302, "text/plain", "");
-}
-
-/* WebSocket traffic and settings storage run in their own task, so a slow
- * HTTP client (a browser's idle preconnect can hold the synchronous
- * WebServer for seconds) never delays spectrum frames. */
+/* WebSocket traffic and settings storage run in their own task, so page
+ * requests never delay spectrum frames. */
 static void ws_task(void *) {
     static uint8_t out[HEADER + SWEEP_POINTS];
     static char status_out[sizeof(status_text)];
@@ -451,10 +442,9 @@ static void ws_task(void *) {
     }
 }
 
-/* DNS answers run in their own task: the synchronous WebServer in loop()
- * can wait seconds on an idle connection, and phones joining the access
- * point time out their DNS lookups (and the captive-portal check) when
- * the answers wait behind it. */
+/* DNS answers run in their own task, so phones joining the access point
+ * get them at once whatever the page server is doing. Every name resolves
+ * to the access point (captive portal). */
 static void dns_task(void *) {
     for (;;) {
         dns.processNextRequest();
@@ -472,9 +462,7 @@ void setup() {
     WiFi.setSleep(false);
     dns.setErrorReplyCode(DNSReplyCode::NoError);
     dns.start(53, "*", WiFi.softAPIP());
-    http.on("/", [] { http.send_P(200, "text/html", INDEX_HTML); });
-    http.onNotFound(redirect_to_portal);
-    http.begin();
+    portal_http_begin(INDEX_HTML);
     ws.begin();
     ws.onEvent(on_ws);
     /* Drop phones that went silent (sleep, out of range) instead of
@@ -488,6 +476,6 @@ void setup() {
 }
 
 void loop() {
-    http.handleClient();
+    portal_http_poll();
     delay(2);
 }
