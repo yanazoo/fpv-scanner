@@ -126,6 +126,8 @@ static struct {
     SweepConfig c;
     unsigned steps, sweep_ms;
 } last;
+/* Per-sweep totals of SdrLink::tune_ms / measure_ms, shown on the page. */
+static uint32_t sweep_tune_ms, sweep_measure_ms;
 static void set_status(bool linked, const char *info, const SweepConfig &c, unsigned steps, unsigned sweep_ms) {
     xSemaphoreTake(lock, portMAX_DELAY);
     last.linked = linked;
@@ -137,12 +139,13 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
              "{\"type\":\"status\",\"linked\":%s,\"info\":\"%s\",\"start\":%u,\"stop\":%u,\"rate\":%u,"
              "\"dwell\":%u,\"det\":%u,\"gain\":%d,\"gain_max\":%u,\"steps\":%u,\"step_khz\":%u,"
              "\"sweep_ms\":%u,\"error\":\"%s\",\"cal\":%d,\"bands\":%u,\"noise\":%s,"
-             "\"markers\":[%d,%d,%d,%d],\"hold\":%u,\"avg\":%u,\"ytop\":%d,\"yrange\":%d}",
+             "\"markers\":[%d,%d,%d,%d],\"hold\":%u,\"avg\":%u,\"ytop\":%d,\"yrange\":%d,"
+             "\"tune_ms\":%u,\"measure_ms\":%u}",
              linked ? "true" : "false", info, c.start_mhz, c.stop_mhz, c.rate_code, c.dwell_ms,
              c.max_hold ? 1 : 0, c.gain, gain_max, steps, (unsigned)(2 * half_use_khz(c.rate_code)), sweep_ms,
              receiver_error, config.cal_tenths, config.bands, has_noise ? "true" : "false", config.markers[0],
              config.markers[1], config.markers[2], config.markers[3], config.hold, config.avg, config.ytop,
-             config.yrange);
+             config.yrange, (unsigned)sweep_tune_ms, (unsigned)sweep_measure_ms);
     status_dirty = true;
     xSemaphoreGive(lock);
 }
@@ -188,11 +191,28 @@ static bool changed_since_start(void) {
     return changed;
 }
 
+static void publish(const SweepConfig &c, unsigned elapsed_ms, unsigned steps, const uint8_t *trace) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    memcpy(frame, "FPV1", 4);
+    put32(frame + 4, c.start_mhz * 1000);
+    put32(frame + 8, c.stop_mhz * 1000);
+    put16(frame + 12, SWEEP_POINTS);
+    put16(frame + 14, elapsed_ms > 65535 ? 65535 : elapsed_ms);
+    put32(frame + 16, ++frame_seq);
+    frame[20] = c.rate_code;
+    frame[21] = c.max_hold;
+    frame[22] = steps;
+    frame[23] = 0;
+    memcpy(frame + HEADER, trace, SWEEP_POINTS);
+    xSemaphoreGive(lock);
+}
+
 static void sweep_task(void *) {
     static uint8_t bins[2048];
     static uint8_t trace[SWEEP_POINTS];
     static bool filled[SWEEP_POINTS];
     SweepConfig c;
+    unsigned shown_start = 0, shown_stop = 0, shown_rate = ~0u;
     for (;;) {
         if (!sdr.connected()) {
             xSemaphoreTake(lock, portMAX_DELAY);
@@ -223,9 +243,17 @@ static void sweep_task(void *) {
         const double fs = capture_khz[plan.rate_code], half_use = plan.half_khz;
         const double start = c.start_mhz * 1000.0, stop = c.stop_mhz * 1000.0, span = stop - start;
         const unsigned steps = (unsigned)ceil(span / (2 * half_use));
-        memset(trace, 0, sizeof(trace));
+        /* Each step is published as soon as it is measured; points not yet
+         * measured in this sweep keep the previous sweep's values. Code 0
+         * marks "no data yet" after the span or step plan changes. */
+        if (c.start_mhz != shown_start || c.stop_mhz != shown_stop || c.rate_code != shown_rate) {
+            memset(trace, 0, sizeof(trace));
+            shown_start = c.start_mhz;
+            shown_stop = c.stop_mhz;
+            shown_rate = c.rate_code;
+        }
         memset(filled, 0, sizeof(filled));
-        uint32_t t0 = millis();
+        uint32_t t0 = millis(), tune_total = 0, measure_total = 0;
         bool ok = true, restarted = false;
         for (unsigned s = 0; s < steps && ok; s++) {
             /* A new setting restarts the sweep instead of waiting for it to end. */
@@ -236,6 +264,9 @@ static void sweep_task(void *) {
             unsigned centre_mhz = (unsigned)lround((start + (2 * s + 1) * half_use) / 1000.0);
             ok = sdr.spectrum(centre_mhz, plan.rate_code, fft_n, c.dwell_ms, c.max_hold, bins);
             if (!ok) break;
+            tune_total += sdr.tune_ms;
+            measure_total += sdr.measure_ms;
+            int first = SWEEP_POINTS, last_i = -1;
             for (unsigned k = 0; k < fft_n; k++) {
                 int signed_k = k < fft_n / 2 ? (int)k : (int)k - (int)fft_n;
                 if (abs(signed_k) <= 2) continue;
@@ -248,40 +279,45 @@ static void sweep_task(void *) {
                 if (f < start || f >= stop) continue;
                 unsigned i = (unsigned)((f - start) / span * SWEEP_POINTS);
                 if (i >= SWEEP_POINTS) continue;
-                if (!filled[i] || bins[k] > trace[i]) trace[i] = bins[k];
+                uint8_t v = bins[k] ? bins[k] : 1; /* 0 is reserved for "no data" */
+                if (!filled[i] || v > trace[i]) trace[i] = v;
                 filled[i] = true;
+                if ((int)i < first) first = i;
+                if ((int)i > last_i) last_i = i;
             }
+            /* Points narrower than one FFT bin (small spans) are interpolated,
+             * from the previous step's last point across the step join. */
+            int prev = -1;
+            for (int j = first - 1; j >= 0 && j >= first - 64; j--)
+                if (filled[j]) {
+                    prev = j;
+                    break;
+                }
+            if (s == 0)
+                for (int j = 0; j < first && first < SWEEP_POINTS; j++) trace[j] = trace[first];
+            for (int i = first; i <= last_i; i++) {
+                if (!filled[i]) continue;
+                for (int j = prev + 1; prev >= 0 && j < i; j++) {
+                    trace[j] = trace[prev] + (trace[i] - trace[prev]) * (j - prev) / (i - prev);
+                    filled[j] = true;
+                }
+                prev = i;
+            }
+            /* The last step also fills the points past its final bin. */
+            if (s + 1 == steps)
+                for (int j = last_i + 1; j < SWEEP_POINTS && last_i >= 0; j++) trace[j] = trace[last_i];
+            publish(c, millis() - t0, steps, trace);
         }
         if (!ok) {
             sdr.connect(); /* resynchronize after a broken transfer */
             continue;
         }
         if (restarted) continue;
-        /* Points narrower than one FFT bin (small spans) are interpolated. */
-        int last = -1;
-        for (int i = 0; i < SWEEP_POINTS; i++) {
-            if (!filled[i]) continue;
-            for (int j = last + 1; j < i; j++)
-                trace[j] = last < 0 ? trace[i] : trace[last] + (trace[i] - trace[last]) * (j - last) / (i - last);
-            last = i;
-        }
-        for (int j = last + 1; j < SWEEP_POINTS && last >= 0; j++) trace[j] = trace[last];
-        unsigned sweep_ms = millis() - t0;
-
         xSemaphoreTake(lock, portMAX_DELAY);
-        memcpy(frame, "FPV1", 4);
-        put32(frame + 4, c.start_mhz * 1000);
-        put32(frame + 8, c.stop_mhz * 1000);
-        put16(frame + 12, SWEEP_POINTS);
-        put16(frame + 14, sweep_ms > 65535 ? 65535 : sweep_ms);
-        put32(frame + 16, ++frame_seq);
-        frame[20] = c.rate_code;
-        frame[21] = c.max_hold;
-        frame[22] = steps;
-        frame[23] = 0;
-        memcpy(frame + HEADER, trace, SWEEP_POINTS);
+        sweep_tune_ms = tune_total;
+        sweep_measure_ms = measure_total;
         xSemaphoreGive(lock);
-        set_status(true, sdr.info(), c, steps, sweep_ms);
+        set_status(true, sdr.info(), c, steps, millis() - t0);
     }
 }
 
@@ -415,6 +451,17 @@ static void ws_task(void *) {
     }
 }
 
+/* DNS answers run in their own task: the synchronous WebServer in loop()
+ * can wait seconds on an idle connection, and phones joining the access
+ * point time out their DNS lookups (and the captive-portal check) when
+ * the answers wait behind it. */
+static void dns_task(void *) {
+    for (;;) {
+        dns.processNextRequest();
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+}
+
 void setup() {
     Serial.begin(115200);
     lock = xSemaphoreCreateMutex();
@@ -436,11 +483,11 @@ void setup() {
     sdr.begin(SDR_RX_PIN, SDR_TX_PIN, SDR_BAUD);
     xTaskCreatePinnedToCore(sweep_task, "sweep", 8192, nullptr, 2, nullptr, 0);
     xTaskCreatePinnedToCore(ws_task, "ws", 8192, nullptr, 3, nullptr, 1);
+    xTaskCreatePinnedToCore(dns_task, "dns", 4096, nullptr, 3, nullptr, 1);
     Serial.printf("AP %s  http://%s/\n", AP_SSID, WiFi.softAPIP().toString().c_str());
 }
 
 void loop() {
-    dns.processNextRequest();
     http.handleClient();
     delay(2);
 }

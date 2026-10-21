@@ -15,6 +15,9 @@ class SdrLink {
      * power codes (natural FFT order, n entries); returns false on error. */
     bool spectrum(unsigned mhz, unsigned rate_code, unsigned n, unsigned dwell_ms, bool max_hold, uint8_t *bins);
     const char *info() const { return info_; }
+    /* Time the last spectrum() spent retuning (FREQ, which includes the
+     * C5's per-frequency calibration) and measuring (SPEC), in ms. */
+    uint32_t tune_ms = 0, measure_ms = 0;
 
   private:
     bool read_line(char *line, size_t size, uint32_t timeout_ms);
