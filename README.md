@@ -165,12 +165,21 @@ XIAO ESP32-S3 の代わりに Waveshare ESP32-C5-Touch-LCD-2.8（2.8 インチ 2
 
 ### 書き込み（PlatformIO）
 
-1. 3 章と同じ手順でフォルダを開く
-2. PlatformIO の環境（画面下のステータスバー）を **`env:c5_touch_lcd`** に切り替える
-3. 液晶ボードを USB 接続して「Upload」
+液晶版は、リポジトリの中の **`c5_touch_lcd` フォルダ**が別のプロジェクトになっています
+（ソースは共通の `src` を使います）。
+
+1. VS Code の「ファイル」→「フォルダーを開く」で **`c5_touch_lcd` フォルダ**を開く
+2. 液晶ボードを USB 接続して「Upload」
 
 初回は ESP32-C5 用のプラットフォーム（pioarduino 版 55.03.30-2, Arduino-ESP32 3.3.0）を
-自動でダウンロードするため時間がかかります。S3 版は従来どおり `env:xiao_esp32s3` です。
+自動でダウンロードするため時間がかかります。S3 版は従来どおりリポジトリのフォルダを開いて
+ビルドします。
+
+プロジェクトを分けているのは、S3 版と液晶版のプラットフォームが同じ名前の部品
+（`toolchain-riscv32-esp`、`tool-esptoolpy`）を別のバージョンで使うためです。同じ
+プロジェクトにすると、一方をビルドするたびにもう一方の部品が入れ替わり、
+`'riscv32-esp-elf-g++' は、内部コマンドまたは外部コマンド…として認識されていません`
+のようなエラーになります。液晶版の部品は `ユーザーフォルダ\.platformio\c5\` に別に保存されます。
 
 pioarduino の新しい版（55.03.32 以降）は通常の PlatformIO IDE ではインストールできず、
 `MissingPackageManifestError: Could not find one of 'package.json' manifest files` で
@@ -226,7 +235,8 @@ pioarduino の新しい版（55.03.32 以降）は通常の PlatformIO IDE で�
 
 - `SETTINGS.md`: ステップ幅・滞在時間・検波・ゲイン・補正値の解説と使い分け
 
-- `platformio.ini`: PlatformIO 設定（`xiao_esp32s3`: S3 版、`c5_touch_lcd`: 液晶版）
+- `platformio.ini`: PlatformIO 設定（S3 版）
+- `c5_touch_lcd/platformio.ini`: 液晶版の PlatformIO 設定（このフォルダを開いてビルド）
 - `src/config.h`: Wi-Fi 名・パスワード、UART ピン、初回起動時のスパン
 - `src/sdr_link.*`: ESP-SDR の UART プロトコル（`SYNC`, `FREQ`, `SPEC`）クライアント
 - `src/main.cpp`: スイープ処理、設定とノイズの保存（NVS）、キャプティブポータル（DNS 53）、
