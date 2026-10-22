@@ -62,7 +62,11 @@ static void respond(Slot &s) {
 void portal_http_poll() {
     /* Accept every pending connection; when all slots are busy the oldest
      * (most likely an idle preconnect) makes room. */
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    for (WiFiClient c = server.accept(); c; c = server.accept()) {
+#else
     for (WiFiClient c = server.available(); c; c = server.available()) {
+#endif
         Slot *target = nullptr;
         for (Slot &s : slots)
             if (!s.client) {

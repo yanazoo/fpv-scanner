@@ -132,7 +132,10 @@ $('nclr').onclick=()=>{if(send('noise clear')){noise=null;redraw()}};
 function onStatus(s){
  // Until the S3 has the latest display edit, a status report must not undo it.
  if(Date.now()-dispEdit<3000)for(const k of['hold','avg','ytop','yrange'])s[k]=cfg[k];const first=!cfg.start;if(cfg.rate!==s.rate||cfg.det!==s.det||cfg.gain!==s.gain){peak=null;avg=null}
- if(!s.noise)noise=null;cfg=s;if(first)fillForm(s);
+ if(!s.noise)noise=null;
+ // Markers moved elsewhere (another page, the LCD) are followed unless edited here.
+ if(!first&&s.markers.join()!==cfg.markers.join()&&!$('msave').classList.contains('dirty'))markers=s.markers.map(t=>t<0?null:t/10);
+ cfg=s;if(first)fillForm(s);
  $('st').textContent=s.linked?'C5接続':'C5未接続';$('st').className=s.linked?'ok':'ng';
  $('info').textContent=`${s.start}-${s.stop}MHz ${s.steps}step ${s.sweep_ms}ms（切替${s.tune_ms} 測定${s.measure_ms}）`;$('nst').textContent=s.noise?'保存済み':'';
  gerr=s.error;showErr();if(s.error)$('gain').value=s.gain;
