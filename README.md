@@ -169,8 +169,12 @@ XIAO ESP32-S3 の代わりに Waveshare ESP32-C5-Touch-LCD-2.8（2.8 インチ 2
 2. PlatformIO の環境（画面下のステータスバー）を **`env:c5_touch_lcd`** に切り替える
 3. 液晶ボードを USB 接続して「Upload」
 
-初回は ESP32-C5 用のプラットフォーム（pioarduino 版, Arduino-ESP32 3.3.12）を自動で
-ダウンロードするため時間がかかります。S3 版は従来どおり `env:xiao_esp32s3` です。
+初回は ESP32-C5 用のプラットフォーム（pioarduino 版 55.03.30-2, Arduino-ESP32 3.3.0）を
+自動でダウンロードするため時間がかかります。S3 版は従来どおり `env:xiao_esp32s3` です。
+
+pioarduino の新しい版（55.03.32 以降）は通常の PlatformIO IDE ではインストールできず、
+`MissingPackageManifestError: Could not find one of 'package.json' manifest files` で
+止まります。そのため通常の PlatformIO IDE で使える 55.03.30-2 を指定しています。
 
 ### 画面
 
