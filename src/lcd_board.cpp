@@ -11,7 +11,7 @@ const int PIN_SCLK = 6, PIN_MOSI = 7, PIN_LCD_CS = 10, PIN_LCD_DC = 9, PIN_SD_CS
 const int PIN_SDA = 0, PIN_SCL = 1;
 const uint32_t SPI_HZ = 80000000;
 
-const uint8_t EXIO_ADDR = 0x24, EXIO_MODE = 0x02, EXIO_OUTPUT = 0x03, EXIO_PWM = 0x05;
+const uint8_t EXIO_ADDR = 0x24, EXIO_MODE = 0x02, EXIO_OUTPUT = 0x03, EXIO_PWM = 0x05, EXIO_ADC = 0x06;
 const uint8_t EXIO_TP_RST = 0, EXIO_LCD_RST = 1;
 
 const uint8_t TOUCH_ADDR = 0x58;
@@ -121,6 +121,14 @@ bool lcd_board_begin() {
 void lcd_push_rows(int y, int rows, const uint16_t *pixels) {
     lcd_window(0, y, LCD_W - 1, y + rows - 1);
     lcd_write(true, (const uint8_t *)pixels, (size_t)LCD_W * rows * 2);
+}
+
+int lcd_battery_raw() {
+    Wire.beginTransmission(EXIO_ADDR);
+    Wire.write(EXIO_ADC);
+    if (Wire.endTransmission(false) || Wire.requestFrom(EXIO_ADDR, (uint8_t)2) != 2) return -1;
+    int lo = Wire.read();
+    return lo | Wire.read() << 8;
 }
 
 bool lcd_touch(int *x, int *y) {

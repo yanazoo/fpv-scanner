@@ -135,6 +135,7 @@ int shown_gain = -2;
 
 enum Screen { MAIN, SETTINGS } screen = MAIN;
 int active = 0;       /* selected marker */
+int battery = -1;     /* percent, -1 = unknown */
 bool dragging;
 int drag_tenths = -1; /* marker position while dragging, not yet applied */
 
@@ -233,9 +234,18 @@ void draw_main() {
     char s[48];
     /* status line */
     int x = text(0, 0, st.linked ? "C5" : "C5未接続", st.linked ? GREEN : RED) + 8;
-    if (st.linked) snprintf(s, sizeof(s), "%u-%uMHz %ust %ums", cfg.start_mhz, cfg.stop_mhz, st.steps, st.sweep_ms);
+    if (st.linked) snprintf(s, sizeof(s), "%u-%u %ust %ums", cfg.start_mhz, cfg.stop_mhz, st.steps, st.sweep_ms);
     else snprintf(s, sizeof(s), "%u-%uMHz", cfg.start_mhz, cfg.stop_mhz);
     text(x, 0, s, WHITE);
+    /* battery, top right; below BATTERY_LOW_PERCENT it blinks in red */
+    if (battery >= 0) {
+        snprintf(s, sizeof(s), "%d%%", battery);
+        if (battery < BATTERY_LOW_PERCENT && millis() / 500 % 2) {
+            fill(LCD_W - text_width(s) - 2, 0, text_width(s) + 2, 16, RED);
+            text_right(LCD_W - 1, 0, s, WHITE);
+        } else
+            text_right(LCD_W - 1, 0, s, battery < BATTERY_LOW_PERCENT ? RED : battery < 50 ? YELLOW : GREEN);
+    }
 
     /* dBm grid and axis */
     int step = 10 * PH / cfg.yrange >= 18 ? 10 : 20;
@@ -488,11 +498,44 @@ void render() {
     }
 }
 
+/* Lithium cell voltage (mV) to remaining charge (%), at light load. */
+int battery_percent(float mv) {
+    static const uint16_t curve[][2] = {
+        {4200, 100}, {4150, 95}, {4110, 90}, {4080, 85}, {4020, 80}, {3980, 75}, {3950, 70},
+        {3910, 65},  {3870, 60}, {3850, 55}, {3840, 50}, {3820, 45}, {3800, 40}, {3790, 35},
+        {3770, 30},  {3750, 25}, {3730, 20}, {3710, 15}, {3690, 10}, {3610, 5},  {3300, 0},
+    };
+    if (mv >= curve[0][0]) return 100;
+    for (size_t i = 1; i < sizeof(curve) / sizeof(curve[0]); i++)
+        if (mv >= curve[i][0])
+            return lroundf(curve[i][1] + (curve[i - 1][1] - curve[i][1]) * (mv - curve[i][0]) /
+                                             (curve[i - 1][0] - curve[i][0]));
+    return 0;
+}
+
+/* Every 2 s; the voltage is smoothed because radio bursts pull it down. */
+void read_battery() {
+    static float mv_avg;
+    static unsigned reads;
+    int raw = lcd_battery_raw();
+    float mv = raw * BATTERY_MV_PER_COUNT;
+    if (raw < 0 || mv < 2500 || mv > 4600) { /* no battery or no reading */
+        battery = -1;
+        mv_avg = 0;
+    } else {
+        mv_avg = mv_avg ? mv_avg * 0.8f + mv * 0.2f : mv;
+        battery = battery_percent(mv_avg);
+    }
+    if (reads++ % 5 == 0) Serial.printf("battery raw=%d mv=%.0f %d%%\n", raw, mv_avg, battery);
+    shared_set_battery(battery);
+}
+
 void lcd_task(void *) {
     lcd_board_begin();
     buf = (uint16_t *)malloc(LCD_W * STRIP * sizeof(uint16_t));
-    uint32_t last_draw = 0;
+    uint32_t last_draw = 0, last_battery = 0;
     bool dirty = true, down = false;
+    read_battery();
     int up_polls = 0;
     for (;;) {
         int x, y;
@@ -523,6 +566,12 @@ void lcd_task(void *) {
             dirty = true;
         }
         uint32_t now = millis();
+        if (now - last_battery >= 2000) {
+            last_battery = now;
+            read_battery();
+        }
+        /* a low battery blinks: redraw every half second */
+        if (battery >= 0 && battery < BATTERY_LOW_PERCENT && now / 500 != last_draw / 500) dirty = true;
         if ((dirty && now - last_draw >= 80) || now - last_draw >= 1000) {
             render();
             last_draw = now;

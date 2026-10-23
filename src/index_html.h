@@ -9,7 +9,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 *{box-sizing:border-box}body{margin:0;background:#0d1117;color:#e6edf3;font:14px system-ui,sans-serif}
 header{display:flex;gap:8px;justify-content:space-between;padding:6px 10px;background:#161b22;font-size:12px;color:#8b949e}
 header .err{flex:1;text-align:center}
-#st.ok{color:#3fb950}#st.ng,.err{color:#f85149}
+#st.ok{color:#3fb950}#st.ng,.err{color:#f85149}#bat,#st{white-space:nowrap}#bat.hi{color:#3fb950}#bat.mid{color:#f2cc60}#bat.lo{color:#fff;background:#f85149;padding:0 4px;border-radius:3px;animation:blink 1s step-start infinite}@keyframes blink{50%{opacity:0}}
 main{padding:6px;max-width:1100px;margin:auto}
 #cv{width:100%;height:45vh;min-height:240px;background:#000;border:1px solid #30363d;touch-action:none;display:block}
 .box{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px;margin:6px 0}
@@ -19,7 +19,7 @@ input[type=number]{width:72px}button.on{background:#1f6feb}button.dirty{border-c
 table{border-collapse:collapse;width:100%;font-size:12px}td,th{border:1px solid #30363d;padding:4px 2px;text-align:center}
 td.ch{cursor:pointer}#mt td:first-child,#mt th:first-child{width:1%;white-space:nowrap;padding:4px 6px}#mt td,#mt th{width:33%}
 </style></head><body>
-<header><span id="info">-</span><span id="err" class="err"></span><span id="st">接続中…</span></header>
+<header><span id="info">-</span><span id="err" class="err"></span><span id="bat"></span><span id="st">接続中…</span></header>
 <main>
 <div class="row">
  <label><input type="checkbox" id="hold">ピークホールド</label><button id="preset">リセット</button><label><input type="checkbox" id="avg">平均</label>
@@ -138,6 +138,8 @@ function onStatus(s){
  cfg=s;if(first)fillForm(s);
  $('st').textContent=s.linked?'C5接続':'C5未接続';$('st').className=s.linked?'ok':'ng';
  $('info').textContent=`${s.start}-${s.stop}MHz ${s.steps}step ${s.sweep_ms}ms（切替${s.tune_ms} 測定${s.measure_ms}）`;$('nst').textContent=s.noise?'保存済み':'';
+ // Battery of the LCD build (-1: none, as on the S3).
+ const b=s.bat??-1;$('bat').textContent=b<0?'':`電池${b}%`;$('bat').className=b<0?'':b<(s.bat_low??10)?'lo':b<50?'mid':'hi';
  gerr=s.error;showErr();if(s.error)$('gain').value=s.gain;
  if(s.gain_max)$('grange').textContent=`-1=自動、2〜${s.gain_max}（小さいほど強い電波向き、大きいほど弱い電波向き）`;placed()}
 // Errors and warnings share the header bar.

@@ -10,3 +10,5 @@ bool lcd_board_begin();
 void lcd_push_rows(int y, int rows, const uint16_t *pixels);
 /* First touch point in screen coordinates; false when not touched. */
 bool lcd_touch(int *x, int *y);
+/* Battery ADC count from the I/O expander; -1 when it cannot be read. */
+int lcd_battery_raw();

@@ -57,6 +57,7 @@ static bool status_dirty = true;
 static unsigned gain_max;
 static char receiver_error[64];
 static bool settings_dirty;
+static int battery_percent = -1; /* LCD build only */
 
 /* Noise reference saved from the page: same layout as a sweep frame. */
 static uint8_t noise[HEADER + SWEEP_POINTS];
@@ -131,12 +132,12 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
              "\"dwell\":%u,\"det\":%u,\"gain\":%d,\"gain_max\":%u,\"steps\":%u,\"step_khz\":%u,"
              "\"sweep_ms\":%u,\"error\":\"%s\",\"cal\":%d,\"bands\":%u,\"noise\":%s,"
              "\"markers\":[%d,%d,%d,%d],\"hold\":%u,\"avg\":%u,\"ytop\":%d,\"yrange\":%d,"
-             "\"tune_ms\":%u,\"measure_ms\":%u}",
+             "\"tune_ms\":%u,\"measure_ms\":%u,\"bat\":%d,\"bat_low\":%d}",
              linked ? "true" : "false", info, c.start_mhz, c.stop_mhz, c.rate_code, c.dwell_ms,
              c.max_hold ? 1 : 0, c.gain, gain_max, steps, (unsigned)(2 * half_use_khz(c.rate_code)), sweep_ms,
              receiver_error, config.cal_tenths, config.bands, has_noise ? "true" : "false", config.markers[0],
              config.markers[1], config.markers[2], config.markers[3], config.hold, config.avg, config.ytop,
-             config.yrange, (unsigned)sweep_tune_ms, (unsigned)sweep_measure_ms);
+             config.yrange, (unsigned)sweep_tune_ms, (unsigned)sweep_measure_ms, battery_percent, BATTERY_LOW_PERCENT);
     status_dirty = true;
     xSemaphoreGive(lock);
 }
@@ -510,6 +511,14 @@ void shared_clear_noise() {
     xSemaphoreTake(lock, portMAX_DELAY);
     noise_clear_requested = true;
     xSemaphoreGive(lock);
+}
+
+void shared_set_battery(int percent) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    bool changed = percent != battery_percent;
+    battery_percent = percent;
+    xSemaphoreGive(lock);
+    if (changed) refresh_status();
 }
 
 void setup() {

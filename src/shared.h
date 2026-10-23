@@ -42,3 +42,5 @@ void shared_apply(const char *text);
 /* Saves (NSE2 frame) or clears the noise reference; done by the web task. */
 void shared_store_noise(const uint8_t *frame);
 void shared_clear_noise();
+/* Battery level in percent from the LCD board, -1 when unknown. */
+void shared_set_battery(int percent);
