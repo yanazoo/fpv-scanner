@@ -519,6 +519,11 @@ void setup() {
     last.c = config;
     WiFi.mode(WIFI_AP);
     WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL);
+#if SOC_WIFI_SUPPORT_5G
+    /* The ESP32-C5 (LCD build) is dual band: keep its radio on 2.4 GHz, away
+     * from the 5 GHz band being measured. Needs the AP started first. */
+    WiFi.setBandMode(WIFI_BAND_MODE_2G_ONLY);
+#endif
     WiFi.setSleep(false);
     dns.setErrorReplyCode(DNSReplyCode::NoError);
     dns.start(53, "*", WiFi.softAPIP());
