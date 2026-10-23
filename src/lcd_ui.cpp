@@ -422,7 +422,10 @@ void press_main(int x, int y) {
         dragging = true;
         drag_to(x);
     } else if (y >= TY + 16 && y < TY + 16 + 4 * ROW) {
-        active = (y - TY - 16) / ROW;
+        /* tapping the selected row again clears its marker */
+        int m = (y - TY - 16) / ROW;
+        if (m == active && cfg.markers[m] >= 0) set_marker(-1);
+        active = m;
     } else if (BTN_PEAK.in(x, y) && have) {
         const uint8_t *t = trace();
         unsigned k = 0;

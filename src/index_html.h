@@ -119,7 +119,8 @@ for(const b of BK){const l=document.createElement('label');l.innerHTML=`<input t
 $('applyb').onclick=()=>{let m=0;document.querySelectorAll('#bandsel input').forEach(i=>{if(i.checked)m|=1<<BK.indexOf(i.dataset.b)});apply(`cfg bands=${m}`,$('applyb'))};
 // ---- markers
 document.querySelectorAll('.mb').forEach(b=>b.onclick=()=>{act=+b.dataset.m;document.querySelectorAll('.mb').forEach(x=>x.classList.toggle('on',x===b));redraw()});
-$('fpv').onclick=e=>{const td=e.target.closest('td.ch');if(td){markers[act]=+td.dataset.f;placed()}};
+// Tapping the channel the selected marker is on clears it.
+$('fpv').onclick=e=>{const td=e.target.closest('td.ch');if(td){const f=+td.dataset.f;markers[act]=markers[act]===f?null:f;placed()}};
 cv.onpointerdown=e=>{const r=cv.getBoundingClientRect(),f=f0+(e.clientX-r.left-36)/(r.width-42)*(f1-f0);if(f>=f0&&f<=f1){markers[act]=Math.round(f*10)/10;placed()}};
 $('mpk').onclick=()=>{const t=trace();if(!t)return;let k=0;t.forEach((v,i)=>{if(v>t[k])k=i});markers[act]=Math.round((f0+(f1-f0)*(k+0.5)/t.length)*10)/10;placed()};
 $('mclr').onclick=()=>{markers[act]=null;placed()};
