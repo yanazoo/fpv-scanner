@@ -5,7 +5,11 @@
 
 static const int LCD_W = 240, LCD_H = 320;
 
+/* Expander and LCD; the backlight stays off until lcd_backlight(). */
 bool lcd_board_begin();
+void lcd_backlight(unsigned percent);
+/* Touch controller reset (about 0.4 s); call once the first screen is up. */
+bool lcd_touch_begin();
 /* Sends rows y .. y + rows - 1, full width, RGB565 in native byte order. */
 void lcd_push_rows(int y, int rows, const uint16_t *pixels);
 /* First touch point in screen coordinates; false when not touched. */

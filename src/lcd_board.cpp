@@ -106,16 +106,21 @@ bool lcd_board_begin() {
     lcd_command(0xE1, {0xD0, 0x09, 0x0F, 0x08, 0x07, 0x14, 0x37, 0x44, 0x4D, 0x38, 0x15, 0x16, 0x2C, 0x2E});
     lcd_command(0x21); /* inversion on (IPS panel) */
     lcd_command(0x29); /* display on */
+    Serial.printf("[%lu ms] LCD: expander %s\n", millis(), io_ok ? "ok" : "not found");
+    return io_ok;
+}
 
+void lcd_backlight(unsigned percent) { exio_write(EXIO_PWM, min(percent, 100u) * 255 / 100); }
+
+bool lcd_touch_begin() {
     exio_set(EXIO_TP_RST, false);
     delay(100);
     exio_set(EXIO_TP_RST, true);
     delay(300);
     Wire.beginTransmission(TOUCH_ADDR);
     touch_ok = Wire.endTransmission() == 0;
-    exio_write(EXIO_PWM, LCD_BACKLIGHT * 255 / 100);
-    Serial.printf("LCD: expander %s, touch %s\n", io_ok ? "ok" : "not found", touch_ok ? "ok" : "not found");
-    return io_ok;
+    Serial.printf("[%lu ms] LCD: touch %s\n", millis(), touch_ok ? "ok" : "not found");
+    return touch_ok;
 }
 
 void lcd_push_rows(int y, int rows, const uint16_t *pixels) {

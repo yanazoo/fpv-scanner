@@ -520,13 +520,18 @@ int battery_percent(float mv) {
 /* Every 2 s; the voltage is smoothed because radio bursts pull it down. */
 void read_battery() {
     static float mv_avg;
-    static unsigned reads;
+    static unsigned reads, misses;
     int raw = lcd_battery_raw();
     float mv = raw * BATTERY_MV_PER_COUNT;
-    if (raw < 0 || mv < 2500 || mv > 4600) { /* no battery or no reading */
-        battery = -1;
-        mv_avg = 0;
+    if (raw < 0 || mv < 2500 || mv > 4600) {
+        /* No battery, or a failed read: hide the level only when it lasts,
+         * so a single bad read does not make it flicker. */
+        if (++misses >= 3) {
+            battery = -1;
+            mv_avg = 0;
+        }
     } else {
+        misses = 0;
         mv_avg = mv_avg ? mv_avg * 0.8f + mv * 0.2f : mv;
         battery = battery_percent(mv_avg);
     }
@@ -535,11 +540,21 @@ void read_battery() {
 }
 
 void lcd_task(void *) {
+    /* The first screen goes up before the backlight comes on (no garbage from
+     * the LCD's uninitialized memory) and before the slow touch reset. */
     lcd_board_begin();
     buf = (uint16_t *)malloc(LCD_W * STRIP * sizeof(uint16_t));
-    uint32_t last_draw = 0, last_battery = 0;
-    bool dirty = true, down = false;
+    if (!buf) {
+        Serial.println("LCD: no memory for the strip buffer");
+        vTaskDelete(nullptr);
+    }
     read_battery();
+    render();
+    lcd_backlight(LCD_BACKLIGHT);
+    Serial.printf("[%lu ms] LCD: first screen\n", millis());
+    lcd_touch_begin();
+    uint32_t last_draw = millis(), last_battery = last_draw;
+    bool dirty = true, down = false;
     int up_polls = 0;
     for (;;) {
         int x, y;

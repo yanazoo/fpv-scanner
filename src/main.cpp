@@ -526,6 +526,10 @@ void setup() {
     lock = xSemaphoreCreateMutex();
     load_settings();
     last.c = config;
+#if FPV_LCD
+    /* The screen comes up first; Wi-Fi and the rest start meanwhile. */
+    lcd_ui_begin();
+#endif
     WiFi.mode(WIFI_AP);
     WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL);
 #if SOC_WIFI_SUPPORT_5G
@@ -548,10 +552,7 @@ void setup() {
     xTaskCreatePinnedToCore(sweep_task, "sweep", 8192, nullptr, 2, nullptr, 0);
     xTaskCreatePinnedToCore(ws_task, "ws", 8192, nullptr, 3, nullptr, web_core);
     xTaskCreatePinnedToCore(dns_task, "dns", 4096, nullptr, 3, nullptr, web_core);
-#if FPV_LCD
-    lcd_ui_begin();
-#endif
-    Serial.printf("AP %s  http://%s/\n", AP_SSID, WiFi.softAPIP().toString().c_str());
+    Serial.printf("[%lu ms] AP %s  http://%s/\n", millis(), AP_SSID, WiFi.softAPIP().toString().c_str());
 }
 
 void loop() {
