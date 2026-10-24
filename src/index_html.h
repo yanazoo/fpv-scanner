@@ -118,12 +118,15 @@ for(const b of BK){const l=document.createElement('label');l.innerHTML=`<input t
  l.firstChild.onchange=()=>$('applyb').classList.add('dirty');$('bandsel').appendChild(l)}
 $('applyb').onclick=()=>{let m=0;document.querySelectorAll('#bandsel input').forEach(i=>{if(i.checked)m|=1<<BK.indexOf(i.dataset.b)});apply(`cfg bands=${m}`,$('applyb'))};
 // ---- markers
-document.querySelectorAll('.mb').forEach(b=>b.onclick=()=>{act=+b.dataset.m;document.querySelectorAll('.mb').forEach(x=>x.classList.toggle('on',x===b));redraw()});
+// The selected marker (act, -1 = none) is moved by the FPV table, the graph and Peak.
+// Tapping its button or its FPV channel again releases the selection; the marker stays.
+function select(m){act=m;document.querySelectorAll('.mb').forEach(x=>x.classList.toggle('on',+x.dataset.m===act));redraw()}
+document.querySelectorAll('.mb').forEach(b=>b.onclick=()=>select(+b.dataset.m===act?-1:+b.dataset.m));
 // Tapping the channel the selected marker is on clears it.
-$('fpv').onclick=e=>{const td=e.target.closest('td.ch');if(td){const f=+td.dataset.f;markers[act]=markers[act]===f?null:f;placed()}};
-cv.onpointerdown=e=>{const r=cv.getBoundingClientRect(),f=f0+(e.clientX-r.left-36)/(r.width-42)*(f1-f0);if(f>=f0&&f<=f1){markers[act]=Math.round(f*10)/10;placed()}};
-$('mpk').onclick=()=>{const t=trace();if(!t)return;let k=0;t.forEach((v,i)=>{if(v>t[k])k=i});markers[act]=Math.round((f0+(f1-f0)*(k+0.5)/t.length)*10)/10;placed()};
-$('mclr').onclick=()=>{markers[act]=null;placed()};
+$('fpv').onclick=e=>{const td=e.target.closest('td.ch');if(!td||act<0)return;const f=+td.dataset.f;if(markers[act]===f)select(-1);else{markers[act]=f;placed()}};
+cv.onpointerdown=e=>{if(act<0)return;const r=cv.getBoundingClientRect(),f=f0+(e.clientX-r.left-36)/(r.width-42)*(f1-f0);if(f>=f0&&f<=f1){markers[act]=Math.round(f*10)/10;placed()}};
+$('mpk').onclick=()=>{const t=trace();if(!t||act<0)return;let k=0;t.forEach((v,i)=>{if(v>t[k])k=i});markers[act]=Math.round((f0+(f1-f0)*(k+0.5)/t.length)*10)/10;placed()};
+$('mclr').onclick=()=>{if(act<0)return;markers[act]=null;placed()};
 $('msave').onclick=()=>apply('cfg '+markers.map((f,m)=>`m${m+1}=${f===null?-1:Math.round(f*10)}`).join(' '),$('msave'));
 // ---- noise reference: the running average of the current span
 $('nsave').onclick=()=>{if(!avg)return;const n=avg.length,b=new ArrayBuffer(24+n),v=new DataView(b);[78,83,69,50].forEach((c,i)=>v.setUint8(i,c));

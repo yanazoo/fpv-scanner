@@ -134,7 +134,7 @@ bool shown_det;
 int shown_gain = -2;
 
 enum Screen { MAIN, SETTINGS } screen = MAIN;
-int active = 0;       /* selected marker */
+int active = 0;       /* selected marker, -1 = none */
 int battery = -1;     /* percent, -1 = unknown */
 bool dragging;
 int drag_tenths = -1; /* marker position while dragging, not yet applied */
@@ -419,14 +419,15 @@ void set_marker(int tenths) {
 
 void press_main(int x, int y) {
     if (y >= PY && y < PY + PH && x >= PX) {
+        if (active < 0) return; /* no marker selected: the graph is not touched */
         dragging = true;
         drag_to(x);
     } else if (y >= TY + 16 && y < TY + 16 + 4 * ROW) {
-        /* tapping the selected row again clears its marker */
+        /* Tapping the selected row again releases the selection; the marker
+         * keeps its frequency and level. */
         int m = (y - TY - 16) / ROW;
-        if (m == active && cfg.markers[m] >= 0) set_marker(-1);
-        active = m;
-    } else if (BTN_PEAK.in(x, y) && have) {
+        active = m == active ? -1 : m;
+    } else if (BTN_PEAK.in(x, y) && have && active >= 0) {
         const uint8_t *t = trace();
         unsigned k = 0;
         for (unsigned i = 1; i < N; i++)
