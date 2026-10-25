@@ -69,11 +69,27 @@ bool touch_access(uint32_t reg, uint8_t *data, size_t size) {
 } // namespace
 
 bool lcd_board_begin() {
-    Wire.begin(PIN_SDA, PIN_SCL);
-    Wire.setClock(400000);
-    /* All expander pins are outputs; resets released, audio amplifier off. */
-    exio_out = (1 << EXIO_TP_RST) | (1 << EXIO_LCD_RST);
-    bool io_ok = exio_write(EXIO_MODE, 0xFF) && exio_write(EXIO_OUTPUT, exio_out);
+    static bool wire_started;
+    if (!wire_started) {
+        Wire.begin(PIN_SDA, PIN_SCL);
+        Wire.setClock(400000);
+        wire_started = true;
+    }
+    /* The LCD reset and backlight go through the I/O expander, a CH32V003
+     * that starts later than the ESP32-C5 at power-on: until it answers,
+     * nothing below takes effect. Waits up to 3 s; the caller retries. */
+    exio_out = (1 << EXIO_TP_RST) | (1 << EXIO_LCD_RST); /* resets released, amplifier off */
+    uint32_t t0 = millis();
+    bool io_ok;
+    while (!(io_ok = exio_write(EXIO_MODE, 0xFF) && exio_write(EXIO_OUTPUT, exio_out)) && millis() - t0 < 3000)
+        delay(20);
+    if (!io_ok) {
+        Serial.printf("[%lu ms] LCD: I/O expander not answering\n", millis());
+        return false;
+    }
+    delay(20); /* let it settle after the first answer */
+    exio_write(EXIO_MODE, 0xFF);
+    exio_write(EXIO_OUTPUT, exio_out);
 
     pinMode(PIN_LCD_CS, OUTPUT);
     pinMode(PIN_LCD_DC, OUTPUT);
@@ -106,11 +122,15 @@ bool lcd_board_begin() {
     lcd_command(0xE1, {0xD0, 0x09, 0x0F, 0x08, 0x07, 0x14, 0x37, 0x44, 0x4D, 0x38, 0x15, 0x16, 0x2C, 0x2E});
     lcd_command(0x21); /* inversion on (IPS panel) */
     lcd_command(0x29); /* display on */
-    Serial.printf("[%lu ms] LCD: expander %s\n", millis(), io_ok ? "ok" : "not found");
-    return io_ok;
+    Serial.printf("[%lu ms] LCD: ready (expander answered after %lu ms)\n", millis(), millis() - t0);
+    return true;
 }
 
-void lcd_backlight(unsigned percent) { exio_write(EXIO_PWM, min(percent, 100u) * 255 / 100); }
+bool lcd_backlight(unsigned percent) { return exio_write(EXIO_PWM, min(percent, 100u) * 255 / 100); }
+
+bool lcd_board_refresh(unsigned backlight_percent) {
+    return exio_write(EXIO_MODE, 0xFF) && exio_write(EXIO_OUTPUT, exio_out) && lcd_backlight(backlight_percent);
+}
 
 bool lcd_touch_begin() {
     exio_set(EXIO_TP_RST, false);

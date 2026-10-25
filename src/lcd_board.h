@@ -5,9 +5,13 @@
 
 static const int LCD_W = 240, LCD_H = 320;
 
-/* Expander and LCD; the backlight stays off until lcd_backlight(). */
+/* Expander and LCD; the backlight stays off until lcd_backlight().
+ * False when the I/O expander did not answer within 3 s (call again). */
 bool lcd_board_begin();
-void lcd_backlight(unsigned percent);
+bool lcd_backlight(unsigned percent);
+/* Writes the expander's pin setup and backlight again (an expander that
+ * restarted would have dropped them); false when it does not answer. */
+bool lcd_board_refresh(unsigned backlight_percent);
 /* Touch controller reset (about 0.4 s); call once the first screen is up. */
 bool lcd_touch_begin();
 /* Sends rows y .. y + rows - 1, full width, RGB565 in native byte order. */

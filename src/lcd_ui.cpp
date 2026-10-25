@@ -539,20 +539,27 @@ void read_battery() {
     shared_set_battery(battery);
 }
 
-void lcd_task(void *) {
-    /* The first screen goes up before the backlight comes on (no garbage from
-     * the LCD's uninitialized memory) and before the slow touch reset. */
-    lcd_board_begin();
-    buf = (uint16_t *)malloc(LCD_W * STRIP * sizeof(uint16_t));
-    if (!buf) {
-        Serial.println("LCD: no memory for the strip buffer");
-        vTaskDelete(nullptr);
+/* Brings the LCD up, waiting as long as the I/O expander takes to answer.
+ * The first screen goes up before the backlight comes on (no garbage from
+ * the LCD's uninitialized memory) and before the slow touch reset. */
+void bring_up() {
+    while (!lcd_board_begin()) {
     }
     read_battery();
     render();
     lcd_backlight(LCD_BACKLIGHT);
     Serial.printf("[%lu ms] LCD: first screen\n", millis());
     lcd_touch_begin();
+}
+
+void lcd_task(void *) {
+    buf = (uint16_t *)malloc(LCD_W * STRIP * sizeof(uint16_t));
+    if (!buf) {
+        Serial.println("LCD: no memory for the strip buffer");
+        vTaskDelete(nullptr);
+    }
+    bring_up();
+    bool expander_lost = false;
     uint32_t last_draw = millis(), last_battery = last_draw;
     bool dirty = true, down = false;
     int up_polls = 0;
@@ -587,6 +594,20 @@ void lcd_task(void *) {
         uint32_t now = millis();
         if (now - last_battery >= 2000) {
             last_battery = now;
+            /* An expander that stops answering may have restarted (supply
+             * dip) and reset the LCD with it: bring everything up again
+             * once it answers. */
+            if (!lcd_board_refresh(LCD_BACKLIGHT)) {
+                if (!expander_lost) Serial.printf("[%lu ms] LCD: I/O expander lost\n", now);
+                expander_lost = true;
+                continue;
+            }
+            if (expander_lost) {
+                expander_lost = false;
+                bring_up();
+                last_draw = millis();
+                continue;
+            }
             read_battery();
         }
         /* a low battery blinks: redraw every half second */
