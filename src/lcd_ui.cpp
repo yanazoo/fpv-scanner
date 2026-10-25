@@ -119,6 +119,17 @@ void button(const Rect &r, const char *label, bool on = false) {
     text_center(r.x + r.w / 2, r.y + (r.h - 16) / 2, label, WHITE);
 }
 
+/* Settings icon: a gear of 8 teeth, about 20 px across, centred on cx, cy. */
+void gear(int cx, int cy, uint16_t c) {
+    for (int dy = -10; dy <= 10; dy++)
+        for (int dx = -10; dx <= 10; dx++) {
+            float r = sqrtf(dx * dx + dy * dy);
+            if (r < 3.5f) continue; /* hole */
+            bool tooth = cosf(8 * atan2f(dy, dx)) > 0.2f;
+            if (r <= (tooth ? 10.0f : 7.5f)) pixel(cx + dx, cy + dy, c);
+        }
+}
+
 /* ---- state ---- */
 const unsigned N = SWEEP_POINTS;
 SweepConfig cfg;
@@ -179,8 +190,8 @@ const int PX = 32, PY = 18, PW = LCD_W - PX, PH = 150;
 const int TY = PY + PH + 20; /* marker table */
 const int ROW = 20;
 /* peak hold and average (toggles), peak hold reset, settings */
-const Rect BTN_HOLD{0, 288, 68, 32}, BTN_AVG{72, 288, 44, 32}, BTN_RESET{120, 288, 68, 32},
-    BTN_SETTINGS{192, 288, 48, 32};
+const Rect BTN_HOLD{0, 288, 57, 32}, BTN_AVG{61, 288, 57, 32}, BTN_RESET{122, 288, 57, 32},
+    BTN_SETTINGS{183, 288, 57, 32};
 
 int fx(double f) { return PX + (int)lround((f - f0) / (f1 - f0) * PW); }
 int dy(float d) {
@@ -344,10 +355,11 @@ void draw_main() {
         text_right(236, y, s, MCOL[m]);
     }
 
-    button(BTN_HOLD, "ホールド", cfg.hold);
-    button(BTN_AVG, "平均", cfg.avg);
-    button(BTN_RESET, "リセット");
-    button(BTN_SETTINGS, "設定");
+    button(BTN_HOLD, "Hold", cfg.hold);
+    button(BTN_AVG, "Ave", cfg.avg);
+    button(BTN_RESET, "Reset");
+    button(BTN_SETTINGS, "");
+    gear(BTN_SETTINGS.x + BTN_SETTINGS.w / 2, BTN_SETTINGS.y + BTN_SETTINGS.h / 2, WHITE);
 }
 
 /* ---- settings screen ---- */
