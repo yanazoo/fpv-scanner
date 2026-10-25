@@ -8,6 +8,8 @@ static const int LCD_W = 240, LCD_H = 320;
 /* Expander and LCD; the backlight stays off until lcd_backlight().
  * False when the I/O expander did not answer within 3 s (call again). */
 bool lcd_board_begin();
+/* How long the last lcd_board_begin() waited for the expander, in ms. */
+extern uint32_t lcd_expander_wait_ms;
 bool lcd_backlight(unsigned percent);
 /* Writes the expander's pin setup and backlight again (an expander that
  * restarted would have dropped them); false when it does not answer. */

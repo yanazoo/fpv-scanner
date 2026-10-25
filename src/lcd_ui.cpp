@@ -518,6 +518,9 @@ int battery_percent(float mv) {
 }
 
 /* Every 2 s; the voltage is smoothed because radio bursts pull it down. */
+unsigned bring_ups;       /* LCD bring-ups since start */
+uint32_t first_screen_ms; /* time of the last bring-up's first screen */
+
 void read_battery() {
     static float mv_avg;
     static unsigned reads, misses;
@@ -535,7 +538,14 @@ void read_battery() {
         mv_avg = mv_avg ? mv_avg * 0.8f + mv * 0.2f : mv;
         battery = battery_percent(mv_avg);
     }
-    if (reads++ % 5 == 0) Serial.printf("battery raw=%d mv=%.0f %d%%\n", raw, mv_avg, battery);
+    /* About every 10 s, with the start-up timings: the USB serial port
+     * reconnects only after the start, so the log lines printed then are
+     * usually missed. */
+    if (reads++ % 5 == 0)
+        Serial.printf("battery raw=%d mv=%.0f %d%% | LCD up %u time(s), last: expander answered after %lu ms, "
+                      "first screen at %lu ms | uptime %lu s\n",
+                      raw, mv_avg, battery, bring_ups, (unsigned long)lcd_expander_wait_ms,
+                      (unsigned long)first_screen_ms, millis() / 1000);
     shared_set_battery(battery);
 }
 
@@ -548,6 +558,8 @@ void bring_up() {
     read_battery();
     render();
     lcd_backlight(LCD_BACKLIGHT);
+    first_screen_ms = millis();
+    bring_ups++;
     Serial.printf("[%lu ms] LCD: first screen\n", millis());
     lcd_touch_begin();
 }

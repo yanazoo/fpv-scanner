@@ -68,6 +68,8 @@ bool touch_access(uint32_t reg, uint8_t *data, size_t size) {
 }
 } // namespace
 
+uint32_t lcd_expander_wait_ms;
+
 bool lcd_board_begin() {
     static bool wire_started;
     if (!wire_started) {
@@ -87,6 +89,7 @@ bool lcd_board_begin() {
         Serial.printf("[%lu ms] LCD: I/O expander not answering\n", millis());
         return false;
     }
+    lcd_expander_wait_ms = millis() - t0;
     delay(20); /* let it settle after the first answer */
     exio_write(EXIO_MODE, 0xFF);
     exio_write(EXIO_OUTPUT, exio_out);
