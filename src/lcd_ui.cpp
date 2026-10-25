@@ -134,8 +134,8 @@ unsigned shown_rate = ~0u;
 bool shown_det;
 int shown_gain = -2;
 
-enum Screen { MAIN, SETTINGS } screen = MAIN;
-int active = 0;       /* selected marker, -1 = none */
+enum Screen { MAIN, SETTINGS, ADVANCED } screen = MAIN;
+int active = -1;      /* selected marker, -1 = none (as at start-up) */
 int battery = -1;     /* percent, -1 = unknown */
 bool dragging;
 int drag_tenths = -1; /* marker position while dragging, not yet applied */
@@ -349,7 +349,7 @@ void draw_main() {
 
 /* ---- settings screen ---- */
 const int SROW = 44, SY = 40, BH = 36;
-const Rect BTN_BACK{168, 0, 72, 34};
+const Rect BTN_BACK{168, 0, 72, 34}, BTN_ADVANCED{92, 0, 72, 34};
 const Rect BTN_HOLD{116, SY, 52, BH}, BTN_HOLD_RESET{172, SY, 68, BH};
 const Rect BTN_AVG{116, SY + SROW, 52, BH};
 const Rect BTN_TOP_DOWN{56, SY + 2 * SROW, 48, BH}, BTN_TOP_UP{192, SY + 2 * SROW, 48, BH};
@@ -361,6 +361,7 @@ void draw_settings() {
     char s[48];
     const int ty = (BH - 16) / 2;
     text(4, 9, "表示設定", WHITE);
+    button(BTN_ADVANCED, "詳細");
     button(BTN_BACK, "戻る");
     text(0, SY + ty, "ピークホールド", WHITE);
     button(BTN_HOLD, cfg.hold ? "ON" : "OFF", cfg.hold);
@@ -392,6 +393,43 @@ void draw_settings() {
     else
         strcpy(s, "未保存（保存=今の平均線）");
     text(0, SY + 6 * SROW - 2, s, has_noise ? GREEN : GRAY);
+}
+
+/* ---- advanced settings screen: brightness and power saving ---- */
+const Rect BTN_BRIGHT_DOWN{56, SY, 48, BH}, BTN_BRIGHT_UP{192, SY, 48, BH};
+const Rect BTN_SLEEP_DOWN{56, SY + SROW, 48, BH}, BTN_SLEEP_UP{192, SY + SROW, 48, BH};
+const Rect BTN_SLEEP_DOWN_MIN{56, SY + 2 * SROW, 48, BH}, BTN_SLEEP_UP_MIN{192, SY + 2 * SROW, 48, BH};
+
+void sleep_text(int seconds, char *out, size_t size) {
+    if (seconds <= 0) snprintf(out, size, "しない");
+    else if (seconds < 60) snprintf(out, size, "%d秒", seconds);
+    else if (seconds % 60 == 0) snprintf(out, size, "%d分", seconds / 60);
+    else snprintf(out, size, "%d分%d秒", seconds / 60, seconds % 60);
+}
+
+void draw_advanced() {
+    char s[32];
+    const int ty = (BH - 16) / 2;
+    text(4, 9, "詳細設定", WHITE);
+    button(BTN_BACK, "戻る");
+    text(0, SY + ty, "明るさ", WHITE);
+    button(BTN_BRIGHT_DOWN, "-10");
+    snprintf(s, sizeof(s), "%d%%", cfg.lcd_bright);
+    text_center(148, SY + ty, s, WHITE);
+    button(BTN_BRIGHT_UP, "+10");
+    text(0, SY + SROW + ty, "省電力", WHITE);
+    button(BTN_SLEEP_DOWN, "-10秒");
+    sleep_text(cfg.lcd_sleep, s, sizeof(s));
+    text_center(148, SY + SROW + ty, s, WHITE);
+    button(BTN_SLEEP_UP, "+10秒");
+    button(BTN_SLEEP_DOWN_MIN, "-1分");
+    button(BTN_SLEEP_UP_MIN, "+1分");
+    int y = SY + 3 * SROW;
+    text(0, y, "省電力: 操作しない時間が", GRAY);
+    text(0, y + 18, "設定時間たつと暗くなり、", GRAY);
+    text(0, y + 36, "同じ時間でさらに消灯。", GRAY);
+    text(0, y + 54, "画面のタップで明るさが戻る", GRAY);
+    text(0, y + 72, "（そのタップは操作しない）", GRAY);
 }
 
 /* ---- touch ---- */
@@ -441,9 +479,20 @@ void press_main(int x, int y) {
     }
 }
 
+void press_advanced(int x, int y) {
+    if (BTN_BACK.in(x, y)) screen = SETTINGS;
+    else if (BTN_BRIGHT_DOWN.in(x, y)) apply("cfg lbright=%d", max(cfg.lcd_bright - 10, 10));
+    else if (BTN_BRIGHT_UP.in(x, y)) apply("cfg lbright=%d", min(cfg.lcd_bright + 10, 100));
+    else if (BTN_SLEEP_DOWN.in(x, y)) apply("cfg lsleep=%d", max(cfg.lcd_sleep - 10, 0));
+    else if (BTN_SLEEP_UP.in(x, y)) apply("cfg lsleep=%d", min(cfg.lcd_sleep + 10, 600));
+    else if (BTN_SLEEP_DOWN_MIN.in(x, y)) apply("cfg lsleep=%d", max(cfg.lcd_sleep - 60, 0));
+    else if (BTN_SLEEP_UP_MIN.in(x, y)) apply("cfg lsleep=%d", min(cfg.lcd_sleep + 60, 600));
+}
+
 void press_settings(int x, int y) {
     char line[32];
     if (BTN_BACK.in(x, y)) screen = MAIN;
+    else if (BTN_ADVANCED.in(x, y)) screen = ADVANCED;
     else if (BTN_HOLD.in(x, y)) apply("cfg hold=%d", !cfg.hold);
     else if (BTN_HOLD_RESET.in(x, y)) memcpy(peak, data, N);
     else if (BTN_AVG.in(x, y)) apply("cfg avg=%d", !cfg.avg);
@@ -498,7 +547,8 @@ void render() {
     for (strip_y = 0; strip_y < LCD_H; strip_y += STRIP) {
         memset(buf, 0, LCD_W * STRIP * sizeof(uint16_t));
         if (screen == MAIN) draw_main();
-        else draw_settings();
+        else if (screen == SETTINGS) draw_settings();
+        else draw_advanced();
         lcd_push_rows(strip_y, STRIP, buf);
     }
 }
@@ -569,9 +619,35 @@ void read_battery() {
     shared_set_battery(battery);
 }
 
+/* ---- backlight and power saving ----
+ * After lcd_sleep seconds without a touch the backlight dims to 10 %, after
+ * as long again it goes off; a touch brings it back (and does nothing else).
+ * The backlight is set only here, from the setting and the idle time. */
+uint32_t last_touch;
+int backlight = -1; /* percent currently set, -1 = not yet */
+
+int wanted_backlight(uint32_t now) {
+    if (cfg.lcd_sleep <= 0) return cfg.lcd_bright;
+    uint32_t idle = now - last_touch, limit = (uint32_t)cfg.lcd_sleep * 1000;
+    if (idle >= 2 * limit) return 0;
+    if (idle >= limit) return min(cfg.lcd_bright, 10);
+    return cfg.lcd_bright;
+}
+
+void update_backlight(uint32_t now) {
+    int want = wanted_backlight(now);
+    if (want != backlight && lcd_backlight(want)) {
+        backlight = want;
+        Serial.printf("[%lu ms] LCD: backlight %d%%\n", now, want);
+    }
+}
+
 /* Brings the LCD up, waiting as long as the I/O expander takes to answer. */
 void bring_up() {
-    while (!lcd_board_begin()) {
+    cfg = shared_config();
+    last_touch = millis();
+    backlight = wanted_backlight(last_touch);
+    while (!lcd_board_begin(backlight)) {
     }
     bring_ups++;
     read_battery();
@@ -590,6 +666,7 @@ void lcd_task(void *) {
     bool expander_lost = false;
     uint32_t last_draw = millis(), last_battery = last_draw;
     bool dirty = true, down = false;
+    bool waking = false; /* the touch that woke the screen does nothing else */
     int up_polls = 0;
     for (;;) {
         int x, y;
@@ -598,14 +675,21 @@ void lcd_task(void *) {
             if (!down) {
                 down = true;
                 cfg = shared_config();
-                if (screen == MAIN) press_main(x, y);
-                else press_settings(x, y);
+                waking = backlight < cfg.lcd_bright;
+                last_touch = millis();
+                if (waking) update_backlight(last_touch);
+                else if (screen == MAIN) press_main(x, y);
+                else if (screen == SETTINGS) press_settings(x, y);
+                else press_advanced(x, y);
+                cfg = shared_config(); /* a changed brightness applies at once */
             } else if (dragging) {
                 drag_to(x);
             }
             dirty = true;
+            last_touch = millis();
         } else if (down && ++up_polls >= 3) { /* the panel skips reports now and then */
             down = false;
+            waking = false;
             if (dragging) {
                 set_marker(drag_tenths);
                 dragging = false;
@@ -625,7 +709,7 @@ void lcd_task(void *) {
             /* An expander that stops answering may have restarted (supply
              * dip) and reset the LCD with it: bring everything up again
              * once it answers. */
-            if (EXPANDER_REFRESH && !lcd_board_refresh(LCD_BACKLIGHT)) {
+            if (EXPANDER_REFRESH && !lcd_board_refresh(backlight < 0 ? 0 : backlight)) {
                 if (!expander_lost) Serial.printf("[%lu ms] LCD: I/O expander lost\n", now);
                 expander_lost = true;
                 continue;
@@ -637,6 +721,11 @@ void lcd_task(void *) {
                 continue;
             }
             read_battery();
+        }
+        update_backlight(now);
+        if (backlight == 0) { /* screen off: nothing to draw */
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
         }
         /* a low battery blinks: redraw every half second */
         if (battery >= 0 && battery < BATTERY_LOW_PERCENT && now / 500 != last_draw / 500) dirty = true;

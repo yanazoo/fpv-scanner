@@ -29,7 +29,7 @@ td.ch{cursor:pointer}#mt td:first-child,#mt th:first-child{width:1%;white-space:
 
 <div class="box">
 <div class="row">
- <button class="mb on" data-m="0" style="color:#ff6">M1</button><button class="mb" data-m="1" style="color:#6ff">M2</button>
+ <button class="mb" data-m="0" style="color:#ff6">M1</button><button class="mb" data-m="1" style="color:#6ff">M2</button>
  <button class="mb" data-m="2" style="color:#f6f">M3</button><button class="mb" data-m="3" style="color:#6f6">M4</button>
  <button id="mpk">ピーク</button><button id="mclr">消去</button><button id="msave">保存</button>
 </div>
@@ -63,7 +63,7 @@ const BANDS={A:[5865,5845,5825,5805,5785,5765,5745,5725],B:[5733,5752,5771,5790,
 E:[5705,5685,5665,5645,5885,5905,5925,5945],F:[5740,5760,5780,5800,5820,5840,5860,5880],R:[5658,5695,5732,5769,5806,5843,5880,5917]};
 const BK=Object.keys(BANDS),BCOL={A:'#ff9e64',B:'#9ece6a',E:'#bb9af7',F:'#7dcfff',R:'#f7768e'},MCOL=['#ff6','#6ff','#f6f','#6f6'],MBG=['#ffff6633','#66ffff33','#ff66ff33','#66ff6633'];
 let warn='';
-let cfg={},data=null,peak=null,avg=null,noise=null,f0=5650,f1=5850,act=0,markers=[null,null,null,null],ws,lastMsg=0,queued=false;
+let cfg={},data=null,peak=null,avg=null,noise=null,f0=5650,f1=5850,act=-1,markers=[null,null,null,null],ws,lastMsg=0,queued=false;
 const $=id=>document.getElementById(id),cv=$('cv'),ctx=cv.getContext('2d');
 const dbm=c=>c/2-84.3+(cfg.cal||0)/10;
 const shown=b=>((cfg.bands??17)>>BK.indexOf(b))&1;

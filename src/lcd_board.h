@@ -7,7 +7,7 @@ static const int LCD_W = 240, LCD_H = 320;
 
 /* Expander, LCD, touch controller and backlight (the original order).
  * False when the I/O expander did not answer within 3 s (call again). */
-bool lcd_board_begin();
+bool lcd_board_begin(unsigned backlight_percent);
 /* How long the last lcd_board_begin() waited for the expander, in ms. */
 extern uint32_t lcd_expander_wait_ms;
 bool lcd_backlight(unsigned percent);

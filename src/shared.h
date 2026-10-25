@@ -16,6 +16,9 @@ struct SweepConfig {
     int markers[4] = {-1, -1, -1, -1}; /* tenths of MHz, -1 = unset */
     bool hold = false, avg = false;    /* peak-hold / averaged trace */
     int ytop = -17, yrange = 75;       /* graph top (dBm) and height (dB) */
+    /* LCD build: backlight (%) and seconds without a touch until the screen
+     * dims (it goes dark after as long again); 0 = never. */
+    int lcd_bright = 100, lcd_sleep = 0;
 };
 
 /* Sweep frames and noise references: 24-byte header + SWEEP_POINTS codes.

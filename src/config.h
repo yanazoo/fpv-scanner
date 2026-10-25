@@ -17,7 +17,6 @@
 #define TOUCH_SWAP_XY  0
 #define TOUCH_MIRROR_X 0
 #define TOUCH_MIRROR_Y 0
-#define LCD_BACKLIGHT  100 /* percent */
 /* Battery gauge: VBAT reaches the I/O expander's ADC through a 200k/100k
  * divider (1/3). mV = ADC count * BATTERY_MV_PER_COUNT; 3300 mV * 3 / 1023
  * assumes a 10-bit ADC referred to 3.3 V. If the voltage in the serial log

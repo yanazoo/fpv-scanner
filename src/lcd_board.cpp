@@ -71,7 +71,7 @@ bool touch_access(uint32_t reg, uint8_t *data, size_t size) {
 uint32_t lcd_expander_wait_ms;
 bool lcd_touch_begin();
 
-bool lcd_board_begin() {
+bool lcd_board_begin(unsigned backlight_percent) {
     static bool wire_started;
     if (!wire_started) {
         Wire.begin(PIN_SDA, PIN_SCL);
@@ -128,7 +128,7 @@ bool lcd_board_begin() {
     lcd_command(0x29); /* display on */
 
     lcd_touch_begin();
-    lcd_backlight(LCD_BACKLIGHT);
+    lcd_backlight(backlight_percent);
     Serial.printf("[%lu ms] LCD: ready (expander answered after %lu ms)\n", millis(),
                   (unsigned long)lcd_expander_wait_ms);
     return true;
