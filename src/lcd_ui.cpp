@@ -178,7 +178,9 @@ void take_frame() {
 const int PX = 32, PY = 18, PW = LCD_W - PX, PH = 150;
 const int TY = PY + PH + 20; /* marker table */
 const int ROW = 20;
-const Rect BTN_PEAK{0, 288, 78, 32}, BTN_RESET{81, 288, 78, 32}, BTN_SETTINGS{162, 288, 78, 32};
+/* peak hold and average (toggles), peak hold reset, settings */
+const Rect BTN_HOLD{0, 288, 68, 32}, BTN_AVG{72, 288, 44, 32}, BTN_RESET{120, 288, 68, 32},
+    BTN_SETTINGS{192, 288, 48, 32};
 
 int fx(double f) { return PX + (int)lround((f - f0) / (f1 - f0) * PW); }
 int dy(float d) {
@@ -342,7 +344,8 @@ void draw_main() {
         text_right(236, y, s, MCOL[m]);
     }
 
-    button(BTN_PEAK, "Mピーク");
+    button(BTN_HOLD, "ホールド", cfg.hold);
+    button(BTN_AVG, "平均", cfg.avg);
     button(BTN_RESET, "リセット");
     button(BTN_SETTINGS, "設定");
 }
@@ -350,12 +353,11 @@ void draw_main() {
 /* ---- settings screen ---- */
 const int SROW = 44, SY = 40, BH = 36;
 const Rect BTN_BACK{168, 0, 72, 34}, BTN_ADVANCED{92, 0, 72, 34};
-const Rect BTN_HOLD{116, SY, 52, BH}, BTN_HOLD_RESET{172, SY, 68, BH};
-const Rect BTN_AVG{116, SY + SROW, 52, BH};
-const Rect BTN_TOP_DOWN{56, SY + 2 * SROW, 48, BH}, BTN_TOP_UP{192, SY + 2 * SROW, 48, BH};
-const Rect BTN_RANGE_DOWN{56, SY + 3 * SROW, 48, BH}, BTN_RANGE_UP{192, SY + 3 * SROW, 48, BH};
-Rect band_button(int b) { return {60 + b * 36, SY + 4 * SROW, 34, BH}; }
-const Rect BTN_NOISE_SAVE{96, SY + 5 * SROW, 68, BH}, BTN_NOISE_CLEAR{172, SY + 5 * SROW, 68, BH};
+const Rect BTN_PEAK{96, SY, 144, BH};
+const Rect BTN_TOP_DOWN{56, SY + SROW, 48, BH}, BTN_TOP_UP{192, SY + SROW, 48, BH};
+const Rect BTN_RANGE_DOWN{56, SY + 2 * SROW, 48, BH}, BTN_RANGE_UP{192, SY + 2 * SROW, 48, BH};
+Rect band_button(int b) { return {60 + b * 36, SY + 3 * SROW, 34, BH}; }
+const Rect BTN_NOISE_SAVE{96, SY + 4 * SROW, 68, BH}, BTN_NOISE_CLEAR{172, SY + 4 * SROW, 68, BH};
 
 void draw_settings() {
     char s[48];
@@ -363,28 +365,28 @@ void draw_settings() {
     text(4, 9, "表示設定", WHITE);
     button(BTN_ADVANCED, "詳細");
     button(BTN_BACK, "戻る");
-    text(0, SY + ty, "ピークホールド", WHITE);
-    button(BTN_HOLD, cfg.hold ? "ON" : "OFF", cfg.hold);
-    button(BTN_HOLD_RESET, "リセット");
-    text(0, SY + SROW + ty, "平均", WHITE);
-    button(BTN_AVG, cfg.avg ? "ON" : "OFF", cfg.avg);
-    text(0, SY + 2 * SROW + ty, "上限", WHITE);
+    /* moves the selected marker to the strongest point */
+    text(0, SY + ty, "マーカー", WHITE);
+    if (active >= 0) snprintf(s, sizeof(s), "M%dをピークへ", active + 1);
+    else strcpy(s, "未選択");
+    button(BTN_PEAK, s);
+    text(0, SY + SROW + ty, "上限", WHITE);
     button(BTN_TOP_DOWN, "-5");
     snprintf(s, sizeof(s), "%ddBm", cfg.ytop);
-    text_center(148, SY + 2 * SROW + ty, s, WHITE);
+    text_center(148, SY + SROW + ty, s, WHITE);
     button(BTN_TOP_UP, "+5");
-    text(0, SY + 3 * SROW + ty, "範囲", WHITE);
+    text(0, SY + 2 * SROW + ty, "範囲", WHITE);
     button(BTN_RANGE_DOWN, "-5");
     snprintf(s, sizeof(s), "%ddB", cfg.yrange);
-    text_center(148, SY + 3 * SROW + ty, s, WHITE);
+    text_center(148, SY + 2 * SROW + ty, s, WHITE);
     button(BTN_RANGE_UP, "+5");
-    text(0, SY + 4 * SROW + ty, "バンド", WHITE);
+    text(0, SY + 3 * SROW + ty, "バンド", WHITE);
     for (int b = 0; b < 5; b++) {
         char name[2] = {BAND_NAME[b], 0};
         bool on = cfg.bands >> b & 1;
         button(band_button(b), name, on);
     }
-    text(0, SY + 5 * SROW + ty, "ノイズ基準", WHITE);
+    text(0, SY + 4 * SROW + ty, "ノイズ基準", WHITE);
     button(BTN_NOISE_SAVE, "保存");
     button(BTN_NOISE_CLEAR, "消去");
     if (has_noise)
@@ -392,7 +394,7 @@ void draw_settings() {
                  (unsigned)(get32(noise + 8) / 1000));
     else
         strcpy(s, "未保存（保存=今の平均線）");
-    text(0, SY + 6 * SROW - 2, s, has_noise ? GREEN : GRAY);
+    text(0, SY + 5 * SROW - 2, s, has_noise ? GREEN : GRAY);
 }
 
 /* ---- advanced settings screen: brightness and power saving ---- */
@@ -466,12 +468,10 @@ void press_main(int x, int y) {
          * keeps its frequency and level. */
         int m = (y - TY - 16) / ROW;
         active = m == active ? -1 : m;
-    } else if (BTN_PEAK.in(x, y) && have && active >= 0) {
-        const uint8_t *t = trace();
-        unsigned k = 0;
-        for (unsigned i = 1; i < N; i++)
-            if (t[i] > t[k]) k = i;
-        set_marker((int)lround((f0 + (f1 - f0) * (k + 0.5) / N) * 10));
+    } else if (BTN_HOLD.in(x, y)) {
+        apply("cfg hold=%d", !cfg.hold);
+    } else if (BTN_AVG.in(x, y)) {
+        apply("cfg avg=%d", !cfg.avg);
     } else if (BTN_RESET.in(x, y)) {
         memcpy(peak, data, N);
     } else if (BTN_SETTINGS.in(x, y)) {
@@ -493,9 +493,13 @@ void press_settings(int x, int y) {
     char line[32];
     if (BTN_BACK.in(x, y)) screen = MAIN;
     else if (BTN_ADVANCED.in(x, y)) screen = ADVANCED;
-    else if (BTN_HOLD.in(x, y)) apply("cfg hold=%d", !cfg.hold);
-    else if (BTN_HOLD_RESET.in(x, y)) memcpy(peak, data, N);
-    else if (BTN_AVG.in(x, y)) apply("cfg avg=%d", !cfg.avg);
+    else if (BTN_PEAK.in(x, y) && have && active >= 0) {
+        const uint8_t *t = trace();
+        unsigned k = 0;
+        for (unsigned i = 1; i < N; i++)
+            if (t[i] > t[k]) k = i;
+        set_marker((int)lround((f0 + (f1 - f0) * (k + 0.5) / N) * 10));
+    }
     else if (BTN_TOP_DOWN.in(x, y)) apply("cfg ytop=%d", cfg.ytop - 5);
     else if (BTN_TOP_UP.in(x, y)) apply("cfg ytop=%d", cfg.ytop + 5);
     else if (BTN_RANGE_DOWN.in(x, y)) apply("cfg yrange=%d", max(cfg.yrange - 5, 10));
