@@ -1,5 +1,7 @@
-/* XIAO ESP32-S3 front end: 2.4 GHz access point + captive-portal web page
- * showing a 5 GHz sweep measured by an ESP-SDR XIAO ESP32-C5 over UART.
+/* Front end (XIAO ESP32-S3, or with FPV_LCD the Waveshare ESP32-C5 touch
+ * LCD board): 2.4 GHz access point + captive-portal web page showing a
+ * 5 GHz sweep measured by an ESP-SDR XIAO ESP32-C5 over UART. The LCD
+ * build also draws the sweep on its own screen (lcd_ui.cpp).
  *
  * The C5 sees about 30 MHz at a time, so the sweep task retunes it in steps,
  * runs a short on-chip spectrum (SPEC) at each step and stitches the centre
@@ -13,20 +15,10 @@
 #include "index_html.h"
 #include "portal_http.h"
 #include "sdr_link.h"
-
-struct SweepConfig {
-    unsigned start_mhz = DEFAULT_START_MHZ, stop_mhz = DEFAULT_STOP_MHZ;
-    unsigned rate_code = 0; /* step plan, see steps[]: 0: 40, 1: 30, 2: 15, 3: 7.5 MHz */
-    unsigned dwell_ms = 25;
-    bool max_hold = true;
-    int gain = 10; /* -1: hardware AGC, otherwise a PHY gain index */
-    /* Display only; changing them does not restart the sweep. */
-    int cal_tenths = 0;      /* dBm = dBFS + cal_tenths / 10 */
-    unsigned bands = 0x11;   /* FPV band lines shown: bit 0 A, 1 B, 2 E, 3 F, 4 R */
-    int markers[4] = {-1, -1, -1, -1}; /* tenths of MHz, -1 = unset */
-    bool hold = false, avg = false;    /* peak-hold / averaged trace */
-    int ytop = -17, yrange = 75;       /* graph top (dBm) and height (dB) */
-};
+#include "shared.h"
+#if FPV_LCD
+#include "lcd_ui.h"
+#endif
 
 /* Each step keeps only +-half_khz around the LO. The capture rate is at
  * least four times that and the analog filter is narrowed to the step,
@@ -57,7 +49,7 @@ static SweepConfig config;
 static bool config_changed = true;
 
 /* Latest sweep, shared with the web task: 24-byte header + codes. */
-static const size_t HEADER = 24;
+static const size_t HEADER = FRAME_HEADER;
 static uint8_t frame[HEADER + SWEEP_POINTS];
 static uint32_t frame_seq, sent_seq;
 static char status_text[640];
@@ -65,6 +57,7 @@ static bool status_dirty = true;
 static unsigned gain_max;
 static char receiver_error[64];
 static bool settings_dirty;
+static int battery_percent = -1; /* LCD build only */
 
 /* Noise reference saved from the page: same layout as a sweep frame. */
 static uint8_t noise[HEADER + SWEEP_POINTS];
@@ -87,6 +80,8 @@ static void load_settings() {
     c.avg = prefs.getBool("avg", c.avg);
     c.ytop = prefs.getInt("ytop", c.ytop);
     c.yrange = prefs.getInt("yrange", c.yrange);
+    c.lcd_bright = prefs.getInt("lbright", c.lcd_bright);
+    c.lcd_sleep = prefs.getInt("lsleep", c.lcd_sleep);
     /* NSE2: references saved by earlier builds did not track the receiver
      * settings they were taken with, so they are discarded once. */
     has_noise = prefs.getBytes("noise", noise, sizeof(noise)) == sizeof(noise) && !memcmp(noise, "NSE2", 4);
@@ -112,6 +107,8 @@ static void save_settings() {
     prefs.putBool("avg", c.avg);
     prefs.putInt("ytop", c.ytop);
     prefs.putInt("yrange", c.yrange);
+    prefs.putInt("lbright", c.lcd_bright);
+    prefs.putInt("lsleep", c.lcd_sleep);
 }
 
 static void put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
@@ -139,12 +136,12 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
              "\"dwell\":%u,\"det\":%u,\"gain\":%d,\"gain_max\":%u,\"steps\":%u,\"step_khz\":%u,"
              "\"sweep_ms\":%u,\"error\":\"%s\",\"cal\":%d,\"bands\":%u,\"noise\":%s,"
              "\"markers\":[%d,%d,%d,%d],\"hold\":%u,\"avg\":%u,\"ytop\":%d,\"yrange\":%d,"
-             "\"tune_ms\":%u,\"measure_ms\":%u}",
+             "\"tune_ms\":%u,\"measure_ms\":%u,\"bat\":%d,\"bat_low\":%d}",
              linked ? "true" : "false", info, c.start_mhz, c.stop_mhz, c.rate_code, c.dwell_ms,
              c.max_hold ? 1 : 0, c.gain, gain_max, steps, (unsigned)(2 * half_use_khz(c.rate_code)), sweep_ms,
              receiver_error, config.cal_tenths, config.bands, has_noise ? "true" : "false", config.markers[0],
              config.markers[1], config.markers[2], config.markers[3], config.hold, config.avg, config.ytop,
-             config.yrange, (unsigned)sweep_tune_ms, (unsigned)sweep_measure_ms);
+             config.yrange, (unsigned)sweep_tune_ms, (unsigned)sweep_measure_ms, battery_percent, BATTERY_LOW_PERCENT);
     status_dirty = true;
     xSemaphoreGive(lock);
 }
@@ -347,6 +344,8 @@ static void handle_text(const char *text) {
         else if (!strcmp(key, "avg")) c.avg = value != 0;
         else if (!strcmp(key, "ytop")) c.ytop = constrain(value, -150, 50);
         else if (!strcmp(key, "yrange")) c.yrange = constrain(value, 10, 150);
+        else if (!strcmp(key, "lbright")) c.lcd_bright = constrain(value, 10, 100);
+        else if (!strcmp(key, "lsleep")) c.lcd_sleep = constrain(value, 0, 600);
     }
     if (c.stop_mhz < c.start_mhz + 5) c.stop_mhz = c.start_mhz + 5;
     xSemaphoreTake(lock, portMAX_DELAY);
@@ -369,12 +368,27 @@ static void handle_text(const char *text) {
 
 static void store_noise(const uint8_t *data, size_t length) {
     if (length != sizeof(noise) || memcmp(data, "NSE2", 4)) return;
+    xSemaphoreTake(lock, portMAX_DELAY);
     memcpy(noise, data, sizeof(noise));
     has_noise = true;
+    xSemaphoreGive(lock);
     prefs.putBytes("noise", noise, sizeof(noise));
     ws.broadcastBIN(noise, sizeof(noise));
     refresh_status();
 }
+
+static void clear_noise() {
+    if (has_noise) prefs.remove("noise");
+    xSemaphoreTake(lock, portMAX_DELAY);
+    has_noise = false;
+    xSemaphoreGive(lock);
+    refresh_status();
+}
+
+/* Noise reference requests from the LCD, carried out by the web task
+ * because they broadcast to the pages. */
+static uint8_t noise_request[FRAME_SIZE];
+static bool noise_store_requested, noise_clear_requested;
 
 static void on_ws(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
     if (type == WStype_CONNECTED) {
@@ -392,11 +406,9 @@ static void on_ws(uint8_t client, WStype_t type, uint8_t *payload, size_t length
         size_t n = length < sizeof(text) - 1 ? length : sizeof(text) - 1;
         memcpy(text, payload, n);
         text[n] = '\0';
-        if (!strcmp(text, "noise clear")) {
-            if (has_noise) prefs.remove("noise");
-            has_noise = false;
-            refresh_status();
-        } else
+        if (!strcmp(text, "noise clear"))
+            clear_noise();
+        else
             handle_text(text);
     } else if (type == WStype_BIN) {
         store_noise(payload, length);
@@ -431,8 +443,12 @@ static void ws_task(void *) {
             send_status = true;
         }
         bool save = settings_dirty;
+        bool store = noise_store_requested, clear = noise_clear_requested;
+        noise_store_requested = noise_clear_requested = false;
         xSemaphoreGive(lock);
         if (save) save_settings();
+        if (clear) clear_noise();
+        if (store) store_noise(noise_request, sizeof(noise_request));
         if (send_frame) ws.broadcastBIN(out, sizeof(out));
         if (send_status) {
             ws.broadcastTXT(status_out);
@@ -452,6 +468,65 @@ static void dns_task(void *) {
     }
 }
 
+SweepConfig shared_config() {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    SweepConfig c = config;
+    xSemaphoreGive(lock);
+    return c;
+}
+
+SweepStatus shared_status() {
+    SweepStatus s;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    s.linked = last.linked;
+    s.steps = last.steps;
+    s.sweep_ms = last.sweep_ms;
+    s.tune_ms = sweep_tune_ms;
+    s.measure_ms = sweep_measure_ms;
+    strlcpy(s.error, receiver_error, sizeof(s.error));
+    xSemaphoreGive(lock);
+    return s;
+}
+
+uint32_t shared_frame(uint8_t *out, uint32_t seen) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    uint32_t seq = frame_seq;
+    if (seq != seen) memcpy(out, frame, sizeof(frame));
+    xSemaphoreGive(lock);
+    return seq;
+}
+
+bool shared_noise(uint8_t *out) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    bool any = has_noise;
+    if (any) memcpy(out, noise, sizeof(noise));
+    xSemaphoreGive(lock);
+    return any;
+}
+
+void shared_apply(const char *text) { handle_text(text); }
+
+void shared_store_noise(const uint8_t *data) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    memcpy(noise_request, data, sizeof(noise_request));
+    noise_store_requested = true;
+    xSemaphoreGive(lock);
+}
+
+void shared_clear_noise() {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    noise_clear_requested = true;
+    xSemaphoreGive(lock);
+}
+
+void shared_set_battery(int percent) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    bool changed = percent != battery_percent;
+    battery_percent = percent;
+    xSemaphoreGive(lock);
+    if (changed) refresh_status();
+}
+
 void setup() {
     Serial.begin(115200);
     lock = xSemaphoreCreateMutex();
@@ -469,10 +544,21 @@ void setup() {
      * queueing frames to a dead connection. */
     ws.enableHeartbeat(3000, 2000, 2);
     sdr.begin(SDR_RX_PIN, SDR_TX_PIN, SDR_BAUD);
+    /* The ESP32-C5 (LCD build) has a single core. */
+    const BaseType_t web_core = portNUM_PROCESSORS > 1 ? 1 : 0;
     xTaskCreatePinnedToCore(sweep_task, "sweep", 8192, nullptr, 2, nullptr, 0);
-    xTaskCreatePinnedToCore(ws_task, "ws", 8192, nullptr, 3, nullptr, 1);
-    xTaskCreatePinnedToCore(dns_task, "dns", 4096, nullptr, 3, nullptr, 1);
-    Serial.printf("AP %s  http://%s/\n", AP_SSID, WiFi.softAPIP().toString().c_str());
+    xTaskCreatePinnedToCore(ws_task, "ws", 8192, nullptr, 3, nullptr, web_core);
+    xTaskCreatePinnedToCore(dns_task, "dns", 4096, nullptr, 3, nullptr, web_core);
+#if FPV_LCD
+    lcd_ui_begin();
+#endif
+#if SOC_WIFI_SUPPORT_5G
+    /* The ESP32-C5 (LCD build) is dual band: keep its radio on 2.4 GHz, away
+     * from the 5 GHz band being measured. Needs the AP started; done after
+     * the LCD task has started so that it never holds the screen back. */
+    WiFi.setBandMode(WIFI_BAND_MODE_2G_ONLY);
+#endif
+    Serial.printf("[%lu ms] AP %s  http://%s/\n", millis(), AP_SSID, WiFi.softAPIP().toString().c_str());
 }
 
 void loop() {

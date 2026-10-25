@@ -9,7 +9,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 *{box-sizing:border-box}body{margin:0;background:#0d1117;color:#e6edf3;font:14px system-ui,sans-serif}
 header{display:flex;gap:8px;justify-content:space-between;padding:6px 10px;background:#161b22;font-size:12px;color:#8b949e}
 header .err{flex:1;text-align:center}
-#st.ok{color:#3fb950}#st.ng,.err{color:#f85149}
+#st.ok{color:#3fb950}#st.ng,.err{color:#f85149}#bat,#st{white-space:nowrap}#bat.hi{color:#3fb950}#bat.mid{color:#f2cc60}#bat.lo{color:#fff;background:#f85149;padding:0 4px;border-radius:3px;animation:blink 1s step-start infinite}@keyframes blink{50%{opacity:0}}
 main{padding:6px;max-width:1100px;margin:auto}
 #cv{width:100%;height:45vh;min-height:240px;background:#000;border:1px solid #30363d;touch-action:none;display:block}
 .box{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px;margin:6px 0}
@@ -19,7 +19,7 @@ input[type=number]{width:72px}button.on{background:#1f6feb}button.dirty{border-c
 table{border-collapse:collapse;width:100%;font-size:12px}td,th{border:1px solid #30363d;padding:4px 2px;text-align:center}
 td.ch{cursor:pointer}#mt td:first-child,#mt th:first-child{width:1%;white-space:nowrap;padding:4px 6px}#mt td,#mt th{width:33%}
 </style></head><body>
-<header><span id="info">-</span><span id="err" class="err"></span><span id="st">接続中…</span></header>
+<header><span id="info">-</span><span id="err" class="err"></span><span id="bat"></span><span id="st">接続中…</span></header>
 <main>
 <div class="row">
  <label><input type="checkbox" id="hold">ピークホールド</label><button id="preset">リセット</button><label><input type="checkbox" id="avg">平均</label>
@@ -29,7 +29,7 @@ td.ch{cursor:pointer}#mt td:first-child,#mt th:first-child{width:1%;white-space:
 
 <div class="box">
 <div class="row">
- <button class="mb on" data-m="0" style="color:#ff6">M1</button><button class="mb" data-m="1" style="color:#6ff">M2</button>
+ <button class="mb" data-m="0" style="color:#ff6">M1</button><button class="mb" data-m="1" style="color:#6ff">M2</button>
  <button class="mb" data-m="2" style="color:#f6f">M3</button><button class="mb" data-m="3" style="color:#6f6">M4</button>
  <button id="mpk">ピーク</button><button id="mclr">消去</button><button id="msave">保存</button>
 </div>
@@ -63,7 +63,7 @@ const BANDS={A:[5865,5845,5825,5805,5785,5765,5745,5725],B:[5733,5752,5771,5790,
 E:[5705,5685,5665,5645,5885,5905,5925,5945],F:[5740,5760,5780,5800,5820,5840,5860,5880],R:[5658,5695,5732,5769,5806,5843,5880,5917]};
 const BK=Object.keys(BANDS),BCOL={A:'#ff9e64',B:'#9ece6a',E:'#bb9af7',F:'#7dcfff',R:'#f7768e'},MCOL=['#ff6','#6ff','#f6f','#6f6'],MBG=['#ffff6633','#66ffff33','#ff66ff33','#66ff6633'];
 let warn='';
-let cfg={},data=null,peak=null,avg=null,noise=null,f0=5650,f1=5850,act=0,markers=[null,null,null,null],ws,lastMsg=0,queued=false;
+let cfg={},data=null,peak=null,avg=null,noise=null,f0=5650,f1=5850,act=-1,markers=[null,null,null,null],ws,lastMsg=0,queued=false;
 const $=id=>document.getElementById(id),cv=$('cv'),ctx=cv.getContext('2d');
 const dbm=c=>c/2-84.3+(cfg.cal||0)/10;
 const shown=b=>((cfg.bands??17)>>BK.indexOf(b))&1;
@@ -118,11 +118,15 @@ for(const b of BK){const l=document.createElement('label');l.innerHTML=`<input t
  l.firstChild.onchange=()=>$('applyb').classList.add('dirty');$('bandsel').appendChild(l)}
 $('applyb').onclick=()=>{let m=0;document.querySelectorAll('#bandsel input').forEach(i=>{if(i.checked)m|=1<<BK.indexOf(i.dataset.b)});apply(`cfg bands=${m}`,$('applyb'))};
 // ---- markers
-document.querySelectorAll('.mb').forEach(b=>b.onclick=()=>{act=+b.dataset.m;document.querySelectorAll('.mb').forEach(x=>x.classList.toggle('on',x===b));redraw()});
-$('fpv').onclick=e=>{const td=e.target.closest('td.ch');if(td){markers[act]=+td.dataset.f;placed()}};
-cv.onpointerdown=e=>{const r=cv.getBoundingClientRect(),f=f0+(e.clientX-r.left-36)/(r.width-42)*(f1-f0);if(f>=f0&&f<=f1){markers[act]=Math.round(f*10)/10;placed()}};
-$('mpk').onclick=()=>{const t=trace();if(!t)return;let k=0;t.forEach((v,i)=>{if(v>t[k])k=i});markers[act]=Math.round((f0+(f1-f0)*(k+0.5)/t.length)*10)/10;placed()};
-$('mclr').onclick=()=>{markers[act]=null;placed()};
+// The selected marker (act, -1 = none) is moved by the FPV table, the graph and Peak.
+// Tapping its button or its FPV channel again releases the selection; the marker stays.
+function select(m){act=m;document.querySelectorAll('.mb').forEach(x=>x.classList.toggle('on',+x.dataset.m===act));redraw()}
+document.querySelectorAll('.mb').forEach(b=>b.onclick=()=>select(+b.dataset.m===act?-1:+b.dataset.m));
+// Tapping the channel the selected marker is on clears it.
+$('fpv').onclick=e=>{const td=e.target.closest('td.ch');if(!td||act<0)return;const f=+td.dataset.f;if(markers[act]===f)select(-1);else{markers[act]=f;placed()}};
+cv.onpointerdown=e=>{if(act<0)return;const r=cv.getBoundingClientRect(),f=f0+(e.clientX-r.left-36)/(r.width-42)*(f1-f0);if(f>=f0&&f<=f1){markers[act]=Math.round(f*10)/10;placed()}};
+$('mpk').onclick=()=>{const t=trace();if(!t||act<0)return;let k=0;t.forEach((v,i)=>{if(v>t[k])k=i});markers[act]=Math.round((f0+(f1-f0)*(k+0.5)/t.length)*10)/10;placed()};
+$('mclr').onclick=()=>{if(act<0)return;markers[act]=null;placed()};
 $('msave').onclick=()=>apply('cfg '+markers.map((f,m)=>`m${m+1}=${f===null?-1:Math.round(f*10)}`).join(' '),$('msave'));
 // ---- noise reference: the running average of the current span
 $('nsave').onclick=()=>{if(!avg)return;const n=avg.length,b=new ArrayBuffer(24+n),v=new DataView(b);[78,83,69,50].forEach((c,i)=>v.setUint8(i,c));
@@ -132,9 +136,14 @@ $('nclr').onclick=()=>{if(send('noise clear')){noise=null;redraw()}};
 function onStatus(s){
  // Until the S3 has the latest display edit, a status report must not undo it.
  if(Date.now()-dispEdit<3000)for(const k of['hold','avg','ytop','yrange'])s[k]=cfg[k];const first=!cfg.start;if(cfg.rate!==s.rate||cfg.det!==s.det||cfg.gain!==s.gain){peak=null;avg=null}
- if(!s.noise)noise=null;cfg=s;if(first)fillForm(s);
+ if(!s.noise)noise=null;
+ // Markers moved elsewhere (another page, the LCD) are followed unless edited here.
+ if(!first&&s.markers.join()!==cfg.markers.join()&&!$('msave').classList.contains('dirty'))markers=s.markers.map(t=>t<0?null:t/10);
+ cfg=s;if(first)fillForm(s);
  $('st').textContent=s.linked?'C5接続':'C5未接続';$('st').className=s.linked?'ok':'ng';
  $('info').textContent=`${s.start}-${s.stop}MHz ${s.steps}step ${s.sweep_ms}ms（切替${s.tune_ms} 測定${s.measure_ms}）`;$('nst').textContent=s.noise?'保存済み':'';
+ // Battery of the LCD build (-1: none, as on the S3).
+ const b=s.bat??-1;$('bat').textContent=b<0?'':`電池${b}%`;$('bat').className=b<0?'':b<(s.bat_low??10)?'lo':b<50?'mid':'hi';
  gerr=s.error;showErr();if(s.error)$('gain').value=s.gain;
  if(s.gain_max)$('grange').textContent=`-1=自動、2〜${s.gain_max}（小さいほど強い電波向き、大きいほど弱い電波向き）`;placed()}
 // Errors and warnings share the header bar.
