@@ -19,6 +19,7 @@ struct SweepConfig {
     /* LCD build: backlight (%) and seconds without a touch until the screen
      * dims (it goes dark after as long again); 0 = never. */
     int lcd_bright = 100, lcd_sleep = 0;
+    bool lcd_land = false; /* main screen in landscape (settings stay portrait) */
 };
 
 /* Sweep frames and noise references: 24-byte header + SWEEP_POINTS codes.

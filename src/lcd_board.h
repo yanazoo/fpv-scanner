@@ -19,8 +19,12 @@ bool lcd_backlight(unsigned percent);
 /* Writes the expander's pin setup and backlight again (an expander that
  * restarted would have dropped them); false when it does not answer. */
 bool lcd_board_refresh(unsigned backlight_percent);
-/* Sends rows y .. y + rows - 1, full width, RGB565 in native byte order. */
-void lcd_push_rows(int y, int rows, const uint16_t *pixels);
+/* Sends rows y .. y + rows - 1 of the given width (the full screen width),
+ * RGB565 in native byte order. */
+void lcd_push_rows(int y, int rows, int width, const uint16_t *pixels);
+/* Landscape (320x240, LCD_LANDSCAPE_FLIP) or portrait (240x320) addressing;
+ * lcd_touch() keeps reporting portrait coordinates. */
+void lcd_set_landscape(bool on);
 /* First touch point in screen coordinates; false when not touched. */
 bool lcd_touch(int *x, int *y);
 /* Battery ADC count from the I/O expander; -1 when it cannot be read. */

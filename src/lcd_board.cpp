@@ -165,9 +165,14 @@ bool lcd_touch_begin() {
     return touch_ok;
 }
 
-void lcd_push_rows(int y, int rows, const uint16_t *pixels) {
-    lcd_window(0, y, LCD_W - 1, y + rows - 1);
-    lcd_write(true, (const uint8_t *)pixels, (size_t)LCD_W * rows * 2);
+void lcd_set_landscape(bool on) {
+    /* MADCTL: MV swaps rows and columns, MX / MY mirror them */
+    lcd_command(0x36, {(uint8_t)(!on ? 0x00 : LCD_LANDSCAPE_FLIP ? 0xA0 : 0x60)});
+}
+
+void lcd_push_rows(int y, int rows, int width, const uint16_t *pixels) {
+    lcd_window(0, y, width - 1, y + rows - 1);
+    lcd_write(true, (const uint8_t *)pixels, (size_t)width * rows * 2);
 }
 
 int lcd_battery_raw() {
