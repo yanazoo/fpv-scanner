@@ -27,7 +27,7 @@ constexpr uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) {
 const uint16_t BLACK = 0, WHITE = rgb(230, 237, 243), GRAY = rgb(139, 148, 158), GRID = rgb(40, 40, 40),
                PANEL = rgb(33, 38, 45), BORDER = rgb(70, 76, 84), GREEN = rgb(63, 185, 80), RED = rgb(248, 81, 73),
                YELLOW = rgb(242, 204, 96), BLUE = rgb(121, 192, 255), PEAK = rgb(255, 123, 114),
-               NOISE = rgb(120, 128, 138), ACCENT = rgb(40, 78, 128); /* "on" buttons: a calm blue, not glaring */
+               NOISE = rgb(120, 128, 138), ACCENT = rgb(20, 39, 64); /* "on" buttons: a dim, calm blue */
 const uint16_t MCOL[4] = {rgb(255, 255, 102), rgb(102, 255, 255), rgb(255, 102, 255), rgb(102, 255, 102)};
 const char BAND_NAME[] = "ABEFR";
 const uint16_t BCOL[5] = {rgb(255, 158, 100), rgb(158, 206, 106), rgb(187, 154, 247), rgb(125, 207, 255),
@@ -470,11 +470,13 @@ void set_marker(int tenths) {
     shared_apply(line);
 }
 
+bool in_graph(int x, int y) { return y >= PY && y < PY + PH && x >= PX; }
+
+/* A tap on the main screen, on release (the graph is handled on press, by
+ * dragging the selected marker). */
 void press_main(int x, int y) {
-    if (y >= PY && y < PY + PH && x >= PX) {
-        if (active < 0) return; /* no marker selected: the graph is not touched */
-        dragging = true;
-        drag_to(x);
+    if (in_graph(x, y)) {
+        return;
     } else if (y >= TY + 16 && y < TY + 16 + 4 * ROW) {
         /* Tapping the selected row again releases the selection; the marker
          * keeps its frequency and level. */
@@ -539,6 +541,37 @@ void press_settings(int x, int y) {
             }
 }
 
+/* Touch state, sampled by poll_touch() from the main loop and between the
+ * strips of a redraw, so that short taps are not lost while drawing. Taps
+ * act on release at the last reported position: the first contact point is
+ * the least accurate, worst at the screen edges. */
+struct {
+    bool down;              /* finger on the panel */
+    int x, y;               /* last reported position */
+    uint32_t last_report;
+    bool pressed, released; /* events for the main loop */
+} touch;
+/* No report for this long means the finger was lifted (the panel skips a
+ * report now and then while touched). */
+const uint32_t RELEASE_MS = 80;
+
+void poll_touch() {
+    int x, y;
+    uint32_t now = millis();
+    if (lcd_touch(&x, &y)) {
+        if (!touch.down) {
+            touch.down = true;
+            touch.pressed = true;
+        }
+        touch.x = x;
+        touch.y = y;
+        touch.last_report = now;
+    } else if (touch.down && now - touch.last_report >= RELEASE_MS) {
+        touch.down = false;
+        touch.released = true;
+    }
+}
+
 void render() {
     cfg = shared_config();
     st = shared_status();
@@ -568,6 +601,7 @@ void render() {
         else if (screen == SETTINGS) draw_settings();
         else draw_advanced();
         lcd_push_rows(strip_y, STRIP, buf);
+        poll_touch();
     }
 }
 
@@ -704,40 +738,47 @@ void lcd_task(void *) {
     bring_up();
     bool expander_lost = false;
     uint32_t last_draw = millis(), last_battery = last_draw, last_refresh = last_draw, last_log = 0;
-    bool dirty = true, down = false;
+    bool dirty = true;
     bool waking = false; /* the touch that woke the screen does nothing else */
-    int up_polls = 0;
     for (;;) {
-        int x, y;
-        if (lcd_touch(&x, &y)) {
-            up_polls = 0;
-            if (!down) {
-                down = true;
-                cfg = shared_config();
-                waking = backlight < cfg.lcd_bright;
-                last_touch = millis();
-                if (waking) {
-                    update_backlight(last_touch);
-                } else {
-                    lcd_backlight(backlight); /* in case the expander lost it */
-                    if (screen == MAIN) press_main(x, y);
-                    else if (screen == SETTINGS) press_settings(x, y);
-                    else press_advanced(x, y);
+        poll_touch();
+        if (touch.pressed) {
+            touch.pressed = false;
+            cfg = shared_config();
+            waking = backlight < cfg.lcd_bright;
+            last_touch = millis();
+            if (waking) {
+                update_backlight(last_touch);
+            } else {
+                lcd_backlight(backlight); /* in case the expander lost it */
+                if (screen == MAIN && in_graph(touch.x, touch.y) && active >= 0) {
+                    dragging = true;
+                    drag_to(touch.x);
                 }
-                cfg = shared_config(); /* a changed brightness applies at once */
-            } else if (dragging) {
-                drag_to(x);
             }
             dirty = true;
+        }
+        if (touch.down) {
             last_touch = millis();
-        } else if (down && ++up_polls >= 3) { /* the panel skips reports now and then */
-            down = false;
-            waking = false;
+            if (dragging) {
+                drag_to(touch.x);
+                dirty = true;
+            }
+        }
+        if (touch.released) {
+            touch.released = false;
             if (dragging) {
                 set_marker(drag_tenths);
                 dragging = false;
                 drag_tenths = -1;
+            } else if (!waking) {
+                cfg = shared_config();
+                if (screen == MAIN) press_main(touch.x, touch.y);
+                else if (screen == SETTINGS) press_settings(touch.x, touch.y);
+                else press_advanced(touch.x, touch.y);
+                cfg = shared_config(); /* a changed brightness applies at once */
             }
+            waking = false;
             dirty = true;
         }
         uint32_t s = shared_frame(frame, seq);
