@@ -27,7 +27,7 @@ constexpr uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) {
 const uint16_t BLACK = 0, WHITE = rgb(230, 237, 243), GRAY = rgb(139, 148, 158), GRID = rgb(40, 40, 40),
                PANEL = rgb(33, 38, 45), BORDER = rgb(70, 76, 84), GREEN = rgb(63, 185, 80), RED = rgb(248, 81, 73),
                YELLOW = rgb(242, 204, 96), BLUE = rgb(121, 192, 255), PEAK = rgb(255, 123, 114),
-               NOISE = rgb(120, 128, 138), ACCENT = rgb(31, 111, 235);
+               NOISE = rgb(120, 128, 138), ACCENT = rgb(20, 39, 64); /* "on" buttons: a dim, calm blue */
 const uint16_t MCOL[4] = {rgb(255, 255, 102), rgb(102, 255, 255), rgb(255, 102, 255), rgb(102, 255, 102)};
 const char BAND_NAME[] = "ABEFR";
 const uint16_t BCOL[5] = {rgb(255, 158, 100), rgb(158, 206, 106), rgb(187, 154, 247), rgb(125, 207, 255),
@@ -119,6 +119,17 @@ void button(const Rect &r, const char *label, bool on = false) {
     text_center(r.x + r.w / 2, r.y + (r.h - 16) / 2, label, WHITE);
 }
 
+/* Settings icon: a gear of 8 teeth, about 20 px across, centred on cx, cy. */
+void gear(int cx, int cy, uint16_t c) {
+    for (int dy = -10; dy <= 10; dy++)
+        for (int dx = -10; dx <= 10; dx++) {
+            float r = sqrtf(dx * dx + dy * dy);
+            if (r < 3.5f) continue; /* hole */
+            bool tooth = cosf(8 * atan2f(dy, dx)) > 0.2f;
+            if (r <= (tooth ? 10.0f : 7.5f)) pixel(cx + dx, cy + dy, c);
+        }
+}
+
 /* ---- state ---- */
 const unsigned N = SWEEP_POINTS;
 SweepConfig cfg;
@@ -178,7 +189,9 @@ void take_frame() {
 const int PX = 32, PY = 18, PW = LCD_W - PX, PH = 150;
 const int TY = PY + PH + 20; /* marker table */
 const int ROW = 20;
-const Rect BTN_PEAK{0, 288, 78, 32}, BTN_RESET{81, 288, 78, 32}, BTN_SETTINGS{162, 288, 78, 32};
+/* peak hold and average (toggles), peak hold reset, settings */
+const Rect BTN_HOLD{0, 288, 57, 32}, BTN_AVG{61, 288, 57, 32}, BTN_RESET{122, 288, 57, 32},
+    BTN_SETTINGS{183, 288, 57, 32};
 
 int fx(double f) { return PX + (int)lround((f - f0) / (f1 - f0) * PW); }
 int dy(float d) {
@@ -342,20 +355,21 @@ void draw_main() {
         text_right(236, y, s, MCOL[m]);
     }
 
-    button(BTN_PEAK, "Mピーク");
-    button(BTN_RESET, "リセット");
-    button(BTN_SETTINGS, "設定");
+    button(BTN_HOLD, "Hold", cfg.hold);
+    button(BTN_AVG, "Ave", cfg.avg);
+    button(BTN_RESET, "Reset");
+    button(BTN_SETTINGS, "");
+    gear(BTN_SETTINGS.x + BTN_SETTINGS.w / 2, BTN_SETTINGS.y + BTN_SETTINGS.h / 2, WHITE);
 }
 
 /* ---- settings screen ---- */
 const int SROW = 44, SY = 40, BH = 36;
 const Rect BTN_BACK{168, 0, 72, 34}, BTN_ADVANCED{92, 0, 72, 34};
-const Rect BTN_HOLD{116, SY, 52, BH}, BTN_HOLD_RESET{172, SY, 68, BH};
-const Rect BTN_AVG{116, SY + SROW, 52, BH};
-const Rect BTN_TOP_DOWN{56, SY + 2 * SROW, 48, BH}, BTN_TOP_UP{192, SY + 2 * SROW, 48, BH};
-const Rect BTN_RANGE_DOWN{56, SY + 3 * SROW, 48, BH}, BTN_RANGE_UP{192, SY + 3 * SROW, 48, BH};
-Rect band_button(int b) { return {60 + b * 36, SY + 4 * SROW, 34, BH}; }
-const Rect BTN_NOISE_SAVE{96, SY + 5 * SROW, 68, BH}, BTN_NOISE_CLEAR{172, SY + 5 * SROW, 68, BH};
+const Rect BTN_PEAK{96, SY, 144, BH};
+const Rect BTN_TOP_DOWN{56, SY + SROW, 48, BH}, BTN_TOP_UP{192, SY + SROW, 48, BH};
+const Rect BTN_RANGE_DOWN{56, SY + 2 * SROW, 48, BH}, BTN_RANGE_UP{192, SY + 2 * SROW, 48, BH};
+Rect band_button(int b) { return {60 + b * 36, SY + 3 * SROW, 34, BH}; }
+const Rect BTN_NOISE_SAVE{96, SY + 4 * SROW, 68, BH}, BTN_NOISE_CLEAR{172, SY + 4 * SROW, 68, BH};
 
 void draw_settings() {
     char s[48];
@@ -363,28 +377,28 @@ void draw_settings() {
     text(4, 9, "表示設定", WHITE);
     button(BTN_ADVANCED, "詳細");
     button(BTN_BACK, "戻る");
-    text(0, SY + ty, "ピークホールド", WHITE);
-    button(BTN_HOLD, cfg.hold ? "ON" : "OFF", cfg.hold);
-    button(BTN_HOLD_RESET, "リセット");
-    text(0, SY + SROW + ty, "平均", WHITE);
-    button(BTN_AVG, cfg.avg ? "ON" : "OFF", cfg.avg);
-    text(0, SY + 2 * SROW + ty, "上限", WHITE);
+    /* moves the selected marker to the strongest point */
+    text(0, SY + ty, "マーカー", WHITE);
+    if (active >= 0) snprintf(s, sizeof(s), "M%dをピークへ", active + 1);
+    else strcpy(s, "未選択");
+    button(BTN_PEAK, s);
+    text(0, SY + SROW + ty, "上限", WHITE);
     button(BTN_TOP_DOWN, "-5");
     snprintf(s, sizeof(s), "%ddBm", cfg.ytop);
-    text_center(148, SY + 2 * SROW + ty, s, WHITE);
+    text_center(148, SY + SROW + ty, s, WHITE);
     button(BTN_TOP_UP, "+5");
-    text(0, SY + 3 * SROW + ty, "範囲", WHITE);
+    text(0, SY + 2 * SROW + ty, "範囲", WHITE);
     button(BTN_RANGE_DOWN, "-5");
     snprintf(s, sizeof(s), "%ddB", cfg.yrange);
-    text_center(148, SY + 3 * SROW + ty, s, WHITE);
+    text_center(148, SY + 2 * SROW + ty, s, WHITE);
     button(BTN_RANGE_UP, "+5");
-    text(0, SY + 4 * SROW + ty, "バンド", WHITE);
+    text(0, SY + 3 * SROW + ty, "バンド", WHITE);
     for (int b = 0; b < 5; b++) {
         char name[2] = {BAND_NAME[b], 0};
         bool on = cfg.bands >> b & 1;
         button(band_button(b), name, on);
     }
-    text(0, SY + 5 * SROW + ty, "ノイズ基準", WHITE);
+    text(0, SY + 4 * SROW + ty, "ノイズ基準", WHITE);
     button(BTN_NOISE_SAVE, "保存");
     button(BTN_NOISE_CLEAR, "消去");
     if (has_noise)
@@ -392,7 +406,7 @@ void draw_settings() {
                  (unsigned)(get32(noise + 8) / 1000));
     else
         strcpy(s, "未保存（保存=今の平均線）");
-    text(0, SY + 6 * SROW - 2, s, has_noise ? GREEN : GRAY);
+    text(0, SY + 5 * SROW - 2, s, has_noise ? GREEN : GRAY);
 }
 
 /* ---- advanced settings screen: brightness and power saving ---- */
@@ -456,26 +470,28 @@ void set_marker(int tenths) {
     shared_apply(line);
 }
 
+bool in_graph(int x, int y) { return y >= PY && y < PY + PH && x >= PX; }
+
+/* A tap on the main screen, on release (the graph is handled on press, by
+ * dragging the selected marker). */
 void press_main(int x, int y) {
-    if (y >= PY && y < PY + PH && x >= PX) {
-        if (active < 0) return; /* no marker selected: the graph is not touched */
-        dragging = true;
-        drag_to(x);
+    if (in_graph(x, y)) {
+        return;
     } else if (y >= TY + 16 && y < TY + 16 + 4 * ROW) {
         /* Tapping the selected row again releases the selection; the marker
          * keeps its frequency and level. */
         int m = (y - TY - 16) / ROW;
         active = m == active ? -1 : m;
-    } else if (BTN_PEAK.in(x, y) && have && active >= 0) {
-        const uint8_t *t = trace();
-        unsigned k = 0;
-        for (unsigned i = 1; i < N; i++)
-            if (t[i] > t[k]) k = i;
-        set_marker((int)lround((f0 + (f1 - f0) * (k + 0.5) / N) * 10));
-    } else if (BTN_RESET.in(x, y)) {
-        memcpy(peak, data, N);
-    } else if (BTN_SETTINGS.in(x, y)) {
-        screen = SETTINGS;
+    } else if (y >= TY + 16 + 4 * ROW) {
+        /* Bottom buttons: anything below the table counts, split into four
+         * columns, so taps near the edges and corners (where the panel is
+         * least accurate) and in the gaps still hit a button. */
+        switch (min(x * 4 / LCD_W, 3)) {
+        case 0: apply("cfg hold=%d", !cfg.hold); break;
+        case 1: apply("cfg avg=%d", !cfg.avg); break;
+        case 2: memcpy(peak, data, N); break;
+        default: screen = SETTINGS;
+        }
     }
 }
 
@@ -493,9 +509,13 @@ void press_settings(int x, int y) {
     char line[32];
     if (BTN_BACK.in(x, y)) screen = MAIN;
     else if (BTN_ADVANCED.in(x, y)) screen = ADVANCED;
-    else if (BTN_HOLD.in(x, y)) apply("cfg hold=%d", !cfg.hold);
-    else if (BTN_HOLD_RESET.in(x, y)) memcpy(peak, data, N);
-    else if (BTN_AVG.in(x, y)) apply("cfg avg=%d", !cfg.avg);
+    else if (BTN_PEAK.in(x, y) && have && active >= 0) {
+        const uint8_t *t = trace();
+        unsigned k = 0;
+        for (unsigned i = 1; i < N; i++)
+            if (t[i] > t[k]) k = i;
+        set_marker((int)lround((f0 + (f1 - f0) * (k + 0.5) / N) * 10));
+    }
     else if (BTN_TOP_DOWN.in(x, y)) apply("cfg ytop=%d", cfg.ytop - 5);
     else if (BTN_TOP_UP.in(x, y)) apply("cfg ytop=%d", cfg.ytop + 5);
     else if (BTN_RANGE_DOWN.in(x, y)) apply("cfg yrange=%d", max(cfg.yrange - 5, 10));
@@ -519,6 +539,37 @@ void press_settings(int x, int y) {
                 snprintf(line, sizeof(line), "cfg bands=%u", cfg.bands ^ (1u << b));
                 shared_apply(line);
             }
+}
+
+/* Touch state, sampled by poll_touch() from the main loop and between the
+ * strips of a redraw, so that short taps are not lost while drawing. Taps
+ * act on release at the last reported position: the first contact point is
+ * the least accurate, worst at the screen edges. */
+struct {
+    bool down;              /* finger on the panel */
+    int x, y;               /* last reported position */
+    uint32_t last_report;
+    bool pressed, released; /* events for the main loop */
+} touch;
+/* No report for this long means the finger was lifted (the panel skips a
+ * report now and then while touched). */
+const uint32_t RELEASE_MS = 80;
+
+void poll_touch() {
+    int x, y;
+    uint32_t now = millis();
+    if (lcd_touch(&x, &y)) {
+        if (!touch.down) {
+            touch.down = true;
+            touch.pressed = true;
+        }
+        touch.x = x;
+        touch.y = y;
+        touch.last_report = now;
+    } else if (touch.down && now - touch.last_report >= RELEASE_MS) {
+        touch.down = false;
+        touch.released = true;
+    }
 }
 
 void render() {
@@ -550,6 +601,7 @@ void render() {
         else if (screen == SETTINGS) draw_settings();
         else draw_advanced();
         lcd_push_rows(strip_y, STRIP, buf);
+        poll_touch();
     }
 }
 
@@ -686,40 +738,47 @@ void lcd_task(void *) {
     bring_up();
     bool expander_lost = false;
     uint32_t last_draw = millis(), last_battery = last_draw, last_refresh = last_draw, last_log = 0;
-    bool dirty = true, down = false;
+    bool dirty = true;
     bool waking = false; /* the touch that woke the screen does nothing else */
-    int up_polls = 0;
     for (;;) {
-        int x, y;
-        if (lcd_touch(&x, &y)) {
-            up_polls = 0;
-            if (!down) {
-                down = true;
-                cfg = shared_config();
-                waking = backlight < cfg.lcd_bright;
-                last_touch = millis();
-                if (waking) {
-                    update_backlight(last_touch);
-                } else {
-                    lcd_backlight(backlight); /* in case the expander lost it */
-                    if (screen == MAIN) press_main(x, y);
-                    else if (screen == SETTINGS) press_settings(x, y);
-                    else press_advanced(x, y);
+        poll_touch();
+        if (touch.pressed) {
+            touch.pressed = false;
+            cfg = shared_config();
+            waking = backlight < cfg.lcd_bright;
+            last_touch = millis();
+            if (waking) {
+                update_backlight(last_touch);
+            } else {
+                lcd_backlight(backlight); /* in case the expander lost it */
+                if (screen == MAIN && in_graph(touch.x, touch.y) && active >= 0) {
+                    dragging = true;
+                    drag_to(touch.x);
                 }
-                cfg = shared_config(); /* a changed brightness applies at once */
-            } else if (dragging) {
-                drag_to(x);
             }
             dirty = true;
+        }
+        if (touch.down) {
             last_touch = millis();
-        } else if (down && ++up_polls >= 3) { /* the panel skips reports now and then */
-            down = false;
-            waking = false;
+            if (dragging) {
+                drag_to(touch.x);
+                dirty = true;
+            }
+        }
+        if (touch.released) {
+            touch.released = false;
             if (dragging) {
                 set_marker(drag_tenths);
                 dragging = false;
                 drag_tenths = -1;
+            } else if (!waking) {
+                cfg = shared_config();
+                if (screen == MAIN) press_main(touch.x, touch.y);
+                else if (screen == SETTINGS) press_settings(touch.x, touch.y);
+                else press_advanced(touch.x, touch.y);
+                cfg = shared_config(); /* a changed brightness applies at once */
             }
+            waking = false;
             dirty = true;
         }
         uint32_t s = shared_frame(frame, seq);
