@@ -15,6 +15,7 @@
  * STRIP rows: the whole scene is drawn into each strip, clipped. */
 #include "lcd_ui.h"
 #include <Arduino.h>
+#include <esp_system.h>
 #include "lcd_board.h"
 #include "lcd_font.h"
 #include "shared.h"
@@ -518,6 +519,24 @@ int battery_percent(float mv) {
 }
 
 /* Every 2 s; the voltage is smoothed because radio bursts pull it down. */
+/* Why the chip last started, to tell a power-on or the reset button from
+ * a crash, a watchdog or a supply dip (brownout). */
+const char *reset_reason() {
+    switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_EXT: return "reset pin";
+    case ESP_RST_SW: return "software restart";
+    case ESP_RST_PANIC: return "CRASH (panic)";
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT: return "WATCHDOG";
+    case ESP_RST_BROWNOUT: return "BROWNOUT (supply dip)";
+    case ESP_RST_USB: return "USB (download tool)";
+    case ESP_RST_JTAG: return "JTAG";
+    default: return "other";
+    }
+}
+
 unsigned bring_ups;       /* LCD bring-ups since start */
 uint32_t first_screen_ms; /* time of the last bring-up's first screen */
 
@@ -543,9 +562,9 @@ void read_battery() {
      * usually missed. */
     if (reads++ % 5 == 0)
         Serial.printf("battery raw=%d mv=%.0f %d%% | LCD up %u time(s), last: expander answered after %lu ms, "
-                      "first screen at %lu ms | uptime %lu s\n",
+                      "first screen at %lu ms | uptime %lu s, started by %s\n",
                       raw, mv_avg, battery, bring_ups, (unsigned long)lcd_expander_wait_ms,
-                      (unsigned long)first_screen_ms, millis() / 1000);
+                      (unsigned long)first_screen_ms, millis() / 1000, reset_reason());
     shared_set_battery(battery);
 }
 
