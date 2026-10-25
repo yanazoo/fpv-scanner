@@ -27,7 +27,7 @@ constexpr uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) {
 const uint16_t BLACK = 0, WHITE = rgb(230, 237, 243), GRAY = rgb(139, 148, 158), GRID = rgb(40, 40, 40),
                PANEL = rgb(33, 38, 45), BORDER = rgb(70, 76, 84), GREEN = rgb(63, 185, 80), RED = rgb(248, 81, 73),
                YELLOW = rgb(242, 204, 96), BLUE = rgb(121, 192, 255), PEAK = rgb(255, 123, 114),
-               NOISE = rgb(120, 128, 138), ACCENT = rgb(31, 111, 235);
+               NOISE = rgb(120, 128, 138), ACCENT = rgb(40, 78, 128); /* "on" buttons: a calm blue, not glaring */
 const uint16_t MCOL[4] = {rgb(255, 255, 102), rgb(102, 255, 255), rgb(255, 102, 255), rgb(102, 255, 102)};
 const char BAND_NAME[] = "ABEFR";
 const uint16_t BCOL[5] = {rgb(255, 158, 100), rgb(158, 206, 106), rgb(187, 154, 247), rgb(125, 207, 255),
@@ -480,14 +480,16 @@ void press_main(int x, int y) {
          * keeps its frequency and level. */
         int m = (y - TY - 16) / ROW;
         active = m == active ? -1 : m;
-    } else if (BTN_HOLD.in(x, y)) {
-        apply("cfg hold=%d", !cfg.hold);
-    } else if (BTN_AVG.in(x, y)) {
-        apply("cfg avg=%d", !cfg.avg);
-    } else if (BTN_RESET.in(x, y)) {
-        memcpy(peak, data, N);
-    } else if (BTN_SETTINGS.in(x, y)) {
-        screen = SETTINGS;
+    } else if (y >= TY + 16 + 4 * ROW) {
+        /* Bottom buttons: anything below the table counts, split into four
+         * columns, so taps near the edges and corners (where the panel is
+         * least accurate) and in the gaps still hit a button. */
+        switch (min(x * 4 / LCD_W, 3)) {
+        case 0: apply("cfg hold=%d", !cfg.hold); break;
+        case 1: apply("cfg avg=%d", !cfg.avg); break;
+        case 2: memcpy(peak, data, N); break;
+        default: screen = SETTINGS;
+        }
     }
 }
 
