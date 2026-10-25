@@ -69,6 +69,7 @@ bool touch_access(uint32_t reg, uint8_t *data, size_t size) {
 } // namespace
 
 uint32_t lcd_expander_wait_ms;
+bool lcd_touch_begin();
 
 bool lcd_board_begin() {
     static bool wire_started;
@@ -89,11 +90,6 @@ bool lcd_board_begin() {
         Serial.printf("[%lu ms] LCD: I/O expander not answering\n", millis());
         return false;
     }
-    /* Answering I2C does not yet mean its firmware runs its main loop: wait
-     * (up to 1.5 s, so a board without battery still starts) for a first
-     * battery ADC result as the sign that it does. */
-    uint32_t t1 = millis();
-    while (lcd_battery_raw() <= 0 && millis() - t1 < 1500) delay(20);
     lcd_expander_wait_ms = millis() - t0;
     delay(20); /* let it settle */
     exio_write(EXIO_MODE, 0xFF);
@@ -130,7 +126,11 @@ bool lcd_board_begin() {
     lcd_command(0xE1, {0xD0, 0x09, 0x0F, 0x08, 0x07, 0x14, 0x37, 0x44, 0x4D, 0x38, 0x15, 0x16, 0x2C, 0x2E});
     lcd_command(0x21); /* inversion on (IPS panel) */
     lcd_command(0x29); /* display on */
-    Serial.printf("[%lu ms] LCD: ready (expander answered after %lu ms)\n", millis(), millis() - t0);
+
+    lcd_touch_begin();
+    lcd_backlight(LCD_BACKLIGHT);
+    Serial.printf("[%lu ms] LCD: ready (expander answered after %lu ms)\n", millis(),
+                  (unsigned long)lcd_expander_wait_ms);
     return true;
 }
 
