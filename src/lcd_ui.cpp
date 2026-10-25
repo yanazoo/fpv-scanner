@@ -571,6 +571,11 @@ void lcd_task(void *) {
         vTaskDelete(nullptr);
     }
     bring_up();
+    /* Insurance for power-on: the expander may still restart its outputs
+     * (resetting the LCD, backlight off) after answering, which left the
+     * screen black. A first bring-up within 4 s of power-on is repeated
+     * once at 4 s, when the expander is surely running. */
+    bool recheck = millis() < 4000;
     bool expander_lost = false;
     uint32_t last_draw = millis(), last_battery = last_draw;
     bool dirty = true, down = false;
@@ -604,6 +609,13 @@ void lcd_task(void *) {
             dirty = true;
         }
         uint32_t now = millis();
+        if (recheck && now >= 4000) {
+            recheck = false;
+            Serial.printf("[%lu ms] LCD: start-up recheck\n", now);
+            bring_up();
+            last_draw = millis();
+            continue;
+        }
         if (now - last_battery >= 2000) {
             last_battery = now;
             /* An expander that stops answering may have restarted (supply

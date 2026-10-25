@@ -89,8 +89,13 @@ bool lcd_board_begin() {
         Serial.printf("[%lu ms] LCD: I/O expander not answering\n", millis());
         return false;
     }
+    /* Answering I2C does not yet mean its firmware runs its main loop: wait
+     * (up to 1.5 s, so a board without battery still starts) for a first
+     * battery ADC result as the sign that it does. */
+    uint32_t t1 = millis();
+    while (lcd_battery_raw() <= 0 && millis() - t1 < 1500) delay(20);
     lcd_expander_wait_ms = millis() - t0;
-    delay(20); /* let it settle after the first answer */
+    delay(20); /* let it settle */
     exio_write(EXIO_MODE, 0xFF);
     exio_write(EXIO_OUTPUT, exio_out);
 
