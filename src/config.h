@@ -24,6 +24,13 @@
  * ("battery raw=... mv=...") differs from a meter on the battery, scale this
  * by meter / shown. */
 #define BATTERY_MV_PER_COUNT 9.677f
+/* Test switches for the I/O expander traffic added after the first
+ * version (screen start-up investigation):
+ * BATTERY_GAUGE 0    no battery reads, no battery level shown
+ * EXPANDER_REFRESH 0 no rewrite of the expander's pins and backlight every
+ *                    2 s (and no LCD restart when the expander was lost) */
+#define BATTERY_GAUGE    1
+#define EXPANDER_REFRESH 1
 #else
 /* XIAO S3 D7 (GPIO44, RX) <- C5 D6 (GPIO11, TX)
  * XIAO S3 D6 (GPIO43, TX) -> C5 D7 (GPIO12, RX), plus a common GND. */

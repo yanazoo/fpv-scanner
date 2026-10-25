@@ -543,7 +543,7 @@ uint32_t first_screen_ms; /* time of the last bring-up's first screen */
 void read_battery() {
     static float mv_avg;
     static unsigned reads, misses;
-    int raw = lcd_battery_raw();
+    int raw = BATTERY_GAUGE ? lcd_battery_raw() : -1;
     float mv = raw * BATTERY_MV_PER_COUNT;
     if (raw < 0 || mv < 2500 || mv > 4600) {
         /* No battery, or a failed read: hide the level only when it lasts,
@@ -562,9 +562,10 @@ void read_battery() {
      * usually missed. */
     if (reads++ % 5 == 0)
         Serial.printf("battery raw=%d mv=%.0f %d%% | LCD up %u time(s), last: expander answered after %lu ms, "
-                      "first screen at %lu ms | uptime %lu s, started by %s\n",
+                      "first screen at %lu ms | uptime %lu s, started by %s | gauge %d refresh %d\n",
                       raw, mv_avg, battery, bring_ups, (unsigned long)lcd_expander_wait_ms,
-                      (unsigned long)first_screen_ms, millis() / 1000, reset_reason());
+                      (unsigned long)first_screen_ms, millis() / 1000, reset_reason(), BATTERY_GAUGE,
+                      EXPANDER_REFRESH);
     shared_set_battery(battery);
 }
 
@@ -624,7 +625,7 @@ void lcd_task(void *) {
             /* An expander that stops answering may have restarted (supply
              * dip) and reset the LCD with it: bring everything up again
              * once it answers. */
-            if (!lcd_board_refresh(LCD_BACKLIGHT)) {
+            if (EXPANDER_REFRESH && !lcd_board_refresh(LCD_BACKLIGHT)) {
                 if (!expander_lost) Serial.printf("[%lu ms] LCD: I/O expander lost\n", now);
                 expander_lost = true;
                 continue;
