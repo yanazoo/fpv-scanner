@@ -57,6 +57,13 @@ td.ch{cursor:pointer}#mt td:first-child,#mt th:first-child{width:1%;white-space:
  ノイズ <button id="nsave">保存</button><button id="nclr">消去</button><span id="nst"></span>
 </div></div>
 
+<div class="box" id="lcdbox" hidden><div class="row">
+ 液晶 <label>明るさ <input type="number" id="lbright" min="10" max="100" step="10"> %</label>
+ <label>省電力 <input type="number" id="lsleep" min="0" max="600" step="10"> 秒（0=しない）</label>
+ <label><input type="checkbox" id="lflip">上下反転</label>
+ <button id="applyl">適用</button>
+</div></div>
+
 </main>
 <script>
 const BANDS={A:[5865,5845,5825,5805,5785,5765,5745,5725],B:[5733,5752,5771,5790,5809,5828,5847,5866],
@@ -103,9 +110,11 @@ function fillForm(s){$('start').value=s.start;$('stop').value=s.stop;$('rate').v
 function send(t){if(ws&&ws.readyState===1){ws.send(t);return true}alert('S3に接続されていません');return false}
 function apply(t,btn){if(send(t))btn.classList.remove('dirty')}
 const dirtyOn=(ids,btn)=>ids.forEach(id=>$(id).oninput=()=>$(btn).classList.add('dirty'));
-dirtyOn(['start','stop'],'applys');dirtyOn(['rate','dwell','det','gain','cal'],'applyr');
+dirtyOn(['start','stop'],'applys');dirtyOn(['lbright','lsleep','lflip'],'applyl');dirtyOn(['rate','dwell','det','gain','cal'],'applyr');
 document.querySelectorAll('.pre').forEach(b=>b.onclick=()=>{$('start').value=b.dataset.a;$('stop').value=b.dataset.b;$('applys').classList.add('dirty')});
 $('applys').onclick=()=>{const a=Math.round(+$('start').value),b=Math.max(a+5,Math.round(+$('stop').value));apply(`cfg start=${a} stop=${b}`,$('applys'))};
+// LCD builds only: backlight, power saving, landscape turned over
+$('applyl').onclick=()=>apply(`cfg lbright=${Math.round(+$('lbright').value)} lsleep=${Math.round(+$('lsleep').value)} lflip=${+$('lflip').checked}`,$('applyl'));
 $('applyr').onclick=()=>apply(`cfg rate=${$('rate').value} dwell=${$('dwell').value} det=${$('det').value} gain=${$('gain').value} cal=${Math.round(+$('cal').value*10)}`,$('applyr'));
 // Display settings take effect at once; the S3 saves them after typing pauses.
 let dispTimer,dispEdit=0;
@@ -142,6 +151,7 @@ function onStatus(s){
  cfg=s;if(first)fillForm(s);
  $('st').textContent=s.linked?'C5接続':'C5未接続';$('st').className=s.linked?'ok':'ng';
  $('info').textContent=`${s.start}-${s.stop}MHz ${s.steps}step ${s.sweep_ms}ms（切替${s.tune_ms} 測定${s.measure_ms}）`;$('nst').textContent=s.noise?'保存済み':'';
+ $('lcdbox').hidden=!s.lcd;if(s.lcd&&!$('applyl').classList.contains('dirty')){$('lbright').value=s.lbright;$('lsleep').value=s.lsleep;$('lflip').checked=!!s.lflip}
  // Battery of the LCD build (-1: none, as on the S3).
  const b=s.bat??-1;$('bat').textContent=b<0?'':`電池${b}%`;$('bat').className=b<0?'':b<(s.bat_low??10)?'lo':b<50?'mid':'hi';
  gerr=s.error;showErr();if(s.error)$('gain').value=s.gain;

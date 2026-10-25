@@ -46,6 +46,7 @@ int strip_y;
 /* Logical screen size: 240x320 portrait, 320x240 landscape (main screen). */
 int scr_w = LCD_W, scr_h = LCD_H;
 bool landscape;
+bool flipped; /* landscape turned by 180 degrees */
 
 void fill(int x, int y, int w, int h, uint16_t c) {
     int y0 = max(y, strip_y), y1 = min(y + h, strip_y + STRIP), x0 = max(x, 0), x1 = min(x + w, scr_w);
@@ -224,7 +225,9 @@ void set_layout(bool land) {
         BTN_SETTINGS = {183, 288, 57, 32};
     } else {
         scr_w = LCD_H, scr_h = LCD_W;
-        PW = scr_w - TAB_W - PX, PH = 184;
+        /* without touch there is no button panel and no tab for it */
+        PW = scr_w - (LCD_HAS_TOUCH ? TAB_W : 0) - PX;
+        PH = scr_h - PY - 38; /* 184 on 320x240, 116 on 320x172 */
         TY = PY + PH + 20;
         panel_open = false, panel_px = 0;
     }
@@ -389,6 +392,7 @@ void draw_main() {
             text_right(x0 + CW - 1, y, s, dim(MCOL[m]));
         }
         /* tab, and the sliding button panel over the graph */
+        if (!LCD_HAS_TOUCH) return; /* no buttons on screen */
         if (panel_px < PANEL_W) {
             fill(scr_w - TAB_W, PY, TAB_W, PH, PANEL);
             text(scr_w - TAB_W + 4, PY + PH / 2 - 8, "◀", GRAY);
@@ -665,8 +669,8 @@ void poll_touch() {
     if (lcd_touch(&x, &y)) {
         if (landscape) { /* portrait panel coordinates to the rotated screen */
             int px = x;
-            x = LCD_LANDSCAPE_FLIP ? LCD_H - 1 - y : y;
-            y = LCD_LANDSCAPE_FLIP ? px : LCD_W - 1 - px;
+            x = flipped ? LCD_H - 1 - y : y;
+            y = flipped ? px : LCD_W - 1 - px;
         }
         if (!touch.down) {
             touch.down = true;
@@ -683,10 +687,13 @@ void poll_touch() {
 
 void render() {
     cfg = shared_config();
-    /* only the main screen turns to landscape */
-    bool land = screen == MAIN && cfg.lcd_land;
-    if (land != landscape) {
-        lcd_set_landscape(land);
+    /* only the main screen turns to landscape; a board without touch has
+     * nothing but the main screen, always landscape */
+    bool land = screen == MAIN && (cfg.lcd_land || !LCD_HAS_TOUCH);
+    bool flip = land && (LCD_LANDSCAPE_FLIP != cfg.lcd_flip);
+    if (land != landscape || flip != flipped) {
+        lcd_set_landscape(land, flip);
+        flipped = flip;
         set_layout(land);
     }
     st = shared_status();
@@ -715,7 +722,7 @@ void render() {
         if (screen == MAIN) draw_main();
         else if (screen == SETTINGS) draw_settings();
         else draw_advanced();
-        lcd_push_rows(strip_y, STRIP, scr_w, buf);
+        lcd_push_rows(strip_y, min(STRIP, scr_h - strip_y), scr_w, buf);
         poll_touch();
     }
 }
@@ -828,6 +835,45 @@ void update_backlight(uint32_t now) {
     }
 }
 
+#ifndef LCD_BUTTON_LONG_MS
+#define LCD_BUTTON_LONG_MS 1000
+#endif
+/* The board's user button (1.47: BOOT): a short press resets the peak hold,
+ * a long one (LCD_BUTTON_LONG_MS) switches peak hold on or off. Like a tap,
+ * a press on a dimmed or dark screen only brings the brightness back.
+ * Returns true when the screen should be redrawn. */
+bool poll_button() {
+    static bool down, held, woke;
+    static uint32_t since;
+    uint32_t now = millis();
+    bool pressed = lcd_user_button();
+    if (pressed && !down) {
+        down = true, held = false, since = now;
+        cfg = shared_config();
+        woke = backlight < cfg.lcd_bright;
+        last_touch = now;
+        if (woke) update_backlight(now);
+        return woke;
+    }
+    if (pressed) {
+        last_touch = now;
+        if (!held && !woke && now - since >= LCD_BUTTON_LONG_MS) {
+            held = true;
+            apply("cfg hold=%d", !cfg.hold);
+            return true;
+        }
+        return false;
+    }
+    if (down) {
+        down = false;
+        if (!held && !woke && now - since >= 30) { /* 30 ms: no bounce */
+            memcpy(peak, data, N);
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Brings the LCD up, waiting as long as the I/O expander takes to answer. */
 void bring_up() {
     cfg = shared_config();
@@ -836,6 +882,7 @@ void bring_up() {
     while (!lcd_board_begin()) {
     }
     set_layout(false); /* the LCD set-up leaves it in portrait */
+    flipped = false;
     bring_ups++;
     read_battery();
     render();
@@ -897,6 +944,7 @@ void lcd_task(void *) {
             waking = false;
             dirty = true;
         }
+        if (poll_button()) dirty = true;
         uint32_t s = shared_frame(frame, seq);
         if (s != seq) {
             seq = s;

@@ -52,7 +52,7 @@ static bool config_changed = true;
 static const size_t HEADER = FRAME_HEADER;
 static uint8_t frame[HEADER + SWEEP_POINTS];
 static uint32_t frame_seq, sent_seq;
-static char status_text[640];
+static char status_text[768];
 static bool status_dirty = true;
 static unsigned gain_max;
 static char receiver_error[64];
@@ -83,6 +83,7 @@ static void load_settings() {
     c.lcd_bright = prefs.getInt("lbright", c.lcd_bright);
     c.lcd_sleep = prefs.getInt("lsleep", c.lcd_sleep);
     c.lcd_land = prefs.getBool("lland", c.lcd_land);
+    c.lcd_flip = prefs.getBool("lflip", c.lcd_flip);
     /* NSE2: references saved by earlier builds did not track the receiver
      * settings they were taken with, so they are discarded once. */
     has_noise = prefs.getBytes("noise", noise, sizeof(noise)) == sizeof(noise) && !memcmp(noise, "NSE2", 4);
@@ -111,6 +112,7 @@ static void save_settings() {
     prefs.putInt("lbright", c.lcd_bright);
     prefs.putInt("lsleep", c.lcd_sleep);
     prefs.putBool("lland", c.lcd_land);
+    prefs.putBool("lflip", c.lcd_flip);
 }
 
 static void put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
@@ -138,12 +140,14 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
              "\"dwell\":%u,\"det\":%u,\"gain\":%d,\"gain_max\":%u,\"steps\":%u,\"step_khz\":%u,"
              "\"sweep_ms\":%u,\"error\":\"%s\",\"cal\":%d,\"bands\":%u,\"noise\":%s,"
              "\"markers\":[%d,%d,%d,%d],\"hold\":%u,\"avg\":%u,\"ytop\":%d,\"yrange\":%d,"
-             "\"tune_ms\":%u,\"measure_ms\":%u,\"bat\":%d,\"bat_low\":%d}",
+             "\"tune_ms\":%u,\"measure_ms\":%u,\"bat\":%d,\"bat_low\":%d,"
+             "\"lcd\":%d,\"lbright\":%d,\"lsleep\":%d,\"lflip\":%d}",
              linked ? "true" : "false", info, c.start_mhz, c.stop_mhz, c.rate_code, c.dwell_ms,
              c.max_hold ? 1 : 0, c.gain, gain_max, steps, (unsigned)(2 * half_use_khz(c.rate_code)), sweep_ms,
              receiver_error, config.cal_tenths, config.bands, has_noise ? "true" : "false", config.markers[0],
              config.markers[1], config.markers[2], config.markers[3], config.hold, config.avg, config.ytop,
-             config.yrange, (unsigned)sweep_tune_ms, (unsigned)sweep_measure_ms, battery_percent, BATTERY_LOW_PERCENT);
+             config.yrange, (unsigned)sweep_tune_ms, (unsigned)sweep_measure_ms, battery_percent, BATTERY_LOW_PERCENT,
+             FPV_LCD ? 1 : 0, config.lcd_bright, config.lcd_sleep, config.lcd_flip ? 1 : 0);
     status_dirty = true;
     xSemaphoreGive(lock);
 }
@@ -349,6 +353,7 @@ static void handle_text(const char *text) {
         else if (!strcmp(key, "lbright")) c.lcd_bright = constrain(value, 10, 100);
         else if (!strcmp(key, "lsleep")) c.lcd_sleep = constrain(value, 0, 600);
         else if (!strcmp(key, "lland")) c.lcd_land = value != 0;
+        else if (!strcmp(key, "lflip")) c.lcd_flip = value != 0;
     }
     if (c.stop_mhz < c.start_mhz + 5) c.stop_mhz = c.start_mhz + 5;
     xSemaphoreTake(lock, portMAX_DELAY);

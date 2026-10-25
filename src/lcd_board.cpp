@@ -1,4 +1,4 @@
-#if FPV_LCD
+#if FPV_LCD && !FPV_LCD147
 /* Pin map, expander registers and the ST7789 / CST3530 set-up follow
  * Waveshare's ESP32-C5-Touch-LCD-2.8 Arduino examples (Apache-2.0). */
 #include "lcd_board.h"
@@ -165,10 +165,12 @@ bool lcd_touch_begin() {
     return touch_ok;
 }
 
-void lcd_set_landscape(bool on) {
+void lcd_set_landscape(bool on, bool flip) {
     /* MADCTL: MV swaps rows and columns, MX / MY mirror them */
-    lcd_command(0x36, {(uint8_t)(!on ? 0x00 : LCD_LANDSCAPE_FLIP ? 0xA0 : 0x60)});
+    lcd_command(0x36, {(uint8_t)(!on ? 0x00 : flip ? 0xA0 : 0x60)});
 }
+
+bool lcd_user_button() { return false; }
 
 void lcd_push_rows(int y, int rows, int width, const uint16_t *pixels) {
     lcd_window(0, y, width - 1, y + rows - 1);

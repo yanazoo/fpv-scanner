@@ -1,4 +1,7 @@
 #pragma once
+#ifndef FPV_LCD
+#define FPV_LCD 0 /* 1: an LCD board (FPV_LCD147 for the 1.47 inch one) */
+#endif
 /* ---- Wi-Fi access point (2.4 GHz) -----------------------------------
  * These values are public (committed to the repository). WPA2 needs a
  * password of at least 8 characters. */
@@ -7,7 +10,24 @@
 #define AP_CHANNEL  1
 
 /* ---- UART link to the XIAO ESP32-C5 (ESP-SDR firmware) --------------- */
-#if FPV_LCD
+#if FPV_LCD147
+/* ESP32-C5-LCD-1.47 (KLAYERS / Waveshare), pin header:
+ * "1" (GPIO1, RX) <- XIAO C5 D6 (GPIO11, TX)
+ * "0" (GPIO0, TX) -> XIAO C5 D7 (GPIO12, RX), "5V" -> XIAO 5V, "GND" -> GND.
+ * GPIO0/1 are no strapping pins, so the XIAO cannot change how this board
+ * starts. */
+#define SDR_RX_PIN 1
+#define SDR_TX_PIN 0
+/* Landscape screen (320x172): 0 = the USB connector on the left; the Web
+ * page's "上下反転" turns it over. */
+#define LCD_LANDSCAPE_FLIP 0
+#define LCD_BUTTON_LONG_MS 1000 /* BOOT button: shorter = reset, longer = peak hold */
+/* No battery circuit on this board. */
+#define BATTERY_MV_PER_COUNT 0.0f
+#define BATTERY_READ_MS  30000
+#define BATTERY_GAUGE    0
+#define EXPANDER_REFRESH 0
+#elif FPV_LCD
 /* Waveshare ESP32-C5-Touch-LCD-2.8, header J8:
  * J8 pin 8 (GPIO3, RX) <- XIAO C5 D6 (GPIO11, TX)
  * J8 pin 7 (GPIO2, TX) -> XIAO C5 D7 (GPIO12, RX), plus a common GND. */
