@@ -5,9 +5,12 @@
 
 static const int LCD_W = 240, LCD_H = 320;
 
-/* Expander, LCD, touch controller and backlight (the original order).
- * False when the I/O expander did not answer within 3 s (call again). */
-bool lcd_board_begin(unsigned backlight_percent);
+/* Expander, LCD and touch controller (the original order); the display and
+ * backlight stay off until lcd_display_on() and lcd_backlight(), after the
+ * first screen is drawn. False when the I/O expander did not answer within
+ * 3 s (call again). */
+bool lcd_board_begin();
+void lcd_display_on();
 /* How long the last lcd_board_begin() waited for the expander, in ms. */
 extern uint32_t lcd_expander_wait_ms;
 /* I2C transfers to the I/O expander that failed (not acknowledged). */

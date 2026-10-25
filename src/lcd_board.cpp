@@ -76,7 +76,7 @@ uint32_t lcd_expander_wait_ms;
 bool lcd_touch_begin();
 static void lcd_panel_setup(unsigned sleep_out_ms);
 
-bool lcd_board_begin(unsigned backlight_percent) {
+bool lcd_board_begin() {
     static bool wire_started;
     if (!wire_started) {
         Wire.begin(PIN_SDA, PIN_SCL);
@@ -115,7 +115,6 @@ bool lcd_board_begin(unsigned backlight_percent) {
     lcd_panel_setup(120);
 
     lcd_touch_begin();
-    lcd_backlight(backlight_percent);
     Serial.printf("[%lu ms] LCD: ready (expander answered after %lu ms)\n", millis(),
                   (unsigned long)lcd_expander_wait_ms);
     return true;
@@ -142,8 +141,11 @@ static void lcd_panel_setup(unsigned sleep_out_ms) {
     lcd_command(0xE0, {0xD0, 0x0D, 0x14, 0x0D, 0x0D, 0x09, 0x38, 0x44, 0x4E, 0x3A, 0x17, 0x18, 0x2F, 0x30});
     lcd_command(0xE1, {0xD0, 0x09, 0x0F, 0x08, 0x07, 0x14, 0x37, 0x44, 0x4D, 0x38, 0x15, 0x16, 0x2C, 0x2E});
     lcd_command(0x21); /* inversion on (IPS panel) */
-    lcd_command(0x29); /* display on */
+    /* Display on only once a screen has been drawn (lcd_display_on()):
+     * switched on here it showed the LCD's uninitialized memory as noise. */
 }
+
+void lcd_display_on() { lcd_command(0x29); }
 
 bool lcd_backlight(unsigned percent) { return exio_write(EXIO_PWM, min(percent, 100u) * 255 / 100); }
 

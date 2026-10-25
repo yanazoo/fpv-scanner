@@ -666,11 +666,13 @@ void bring_up() {
     cfg = shared_config();
     last_touch = millis();
     backlight = wanted_backlight(last_touch);
-    while (!lcd_board_begin(backlight)) {
+    while (!lcd_board_begin()) {
     }
     bring_ups++;
     read_battery();
     render();
+    lcd_display_on();
+    lcd_backlight(backlight);
     first_screen_ms = millis();
     Serial.printf("[%lu ms] LCD: first screen\n", millis());
 }
