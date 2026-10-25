@@ -286,7 +286,6 @@ pioarduino の新しい版（55.03.32 以降）は通常の PlatformIO IDE で�
 
 - `platformio.ini`: PlatformIO 設定（S3 版）
 - `c5_touch_lcd/platformio.ini`: 液晶版の PlatformIO 設定（このフォルダを開いてビルド）
-- `c5_touch_lcd/quiet_websockets.py`: 液晶版のビルドで WebSockets ライブラリが出す警告（`flush()` is deprecated）を、そのファイルに限って止める設定
 - `src/config.h`: Wi-Fi 名・パスワード、UART ピン、初回起動時のスパン
 - `src/sdr_link.*`: ESP-SDR の UART プロトコル（`SYNC`, `FREQ`, `SPEC`）クライアント
 - `src/main.cpp`: スイープ処理、設定とノイズの保存（NVS）、キャプティブポータル（DNS 53）、
