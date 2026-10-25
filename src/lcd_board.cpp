@@ -80,10 +80,7 @@ bool lcd_board_begin(unsigned backlight_percent) {
     static bool wire_started;
     if (!wire_started) {
         Wire.begin(PIN_SDA, PIN_SCL);
-        /* 100 kHz rather than the 400 kHz of Waveshare's examples: the
-         * expander (a CH32V003 answering in firmware) once returned a wrong
-         * battery reading, so the bus is slowed for margin. */
-        Wire.setClock(100000);
+        Wire.setClock(400000); /* as Waveshare's examples (100 kHz did not help) */
         wire_started = true;
     }
     /* The LCD reset and backlight go through the I/O expander, a CH32V003
@@ -154,11 +151,6 @@ bool lcd_board_refresh(unsigned backlight_percent) {
     return exio_write(EXIO_MODE, 0xFF) && exio_write(EXIO_OUTPUT, exio_out) && lcd_backlight(backlight_percent);
 }
 
-bool lcd_board_reassert(unsigned backlight_percent) {
-    bool ok = lcd_board_refresh(backlight_percent);
-    lcd_panel_setup(10);
-    return ok;
-}
 
 bool lcd_touch_begin() {
     exio_set(EXIO_TP_RST, false);

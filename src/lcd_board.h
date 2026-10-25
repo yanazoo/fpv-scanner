@@ -16,10 +16,6 @@ bool lcd_backlight(unsigned percent);
 /* Writes the expander's pin setup and backlight again (an expander that
  * restarted would have dropped them); false when it does not answer. */
 bool lcd_board_refresh(unsigned backlight_percent);
-/* lcd_board_refresh() plus the LCD's register set-up again (no reset, no
- * visible change on a running LCD): recovers an LCD that the expander reset
- * while it was still starting up. */
-bool lcd_board_reassert(unsigned backlight_percent);
 /* Sends rows y .. y + rows - 1, full width, RGB565 in native byte order. */
 void lcd_push_rows(int y, int rows, const uint16_t *pixels);
 /* First touch point in screen coordinates; false when not touched. */

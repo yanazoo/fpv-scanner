@@ -591,10 +591,17 @@ int backlight = -1;       /* percent currently set, -1 = not yet */
 unsigned bring_ups;       /* LCD bring-ups since start */
 uint32_t first_screen_ms; /* time of the last bring-up's first screen */
 
+int last_raw = -1;
+float battery_mv;
+unsigned battery_bad_reads;
+
+/* Every BATTERY_READ_MS. Each read is a transfer the expander may garble
+ * (seen: about 1 in 10 at a 2 s interval), so it reads seldom. */
 void read_battery() {
+    if (!BATTERY_GAUGE) return;
     static float mv_avg;
     static unsigned reads, misses, bad_reads;
-    int raw = BATTERY_GAUGE ? lcd_battery_raw() : -1;
+    int raw = lcd_battery_raw();
     float mv = raw * BATTERY_MV_PER_COUNT;
     /* A reading far from the average is a garbled transfer (seen: 67
      * instead of about 435), not the battery: it is dropped. */
@@ -613,17 +620,23 @@ void read_battery() {
         mv_avg = mv_avg ? mv_avg * 0.8f + mv * 0.2f : mv;
         battery = battery_percent(mv_avg);
     }
-    /* About every 10 s, with the start-up timings: the USB serial port
-     * reconnects only after the start, so the log lines printed then are
-     * usually missed. */
-    if (reads++ % 5 == 0)
-        Serial.printf("battery raw=%d mv=%.0f %d%% | LCD up %u time(s), last: expander answered after %lu ms, "
-                      "first screen at %lu ms | uptime %lu s, started by %s | gauge %d refresh %d | "
-                      "I2C errors %u, bad battery reads %u, backlight %d%%\n",
-                      raw, mv_avg, battery, bring_ups, (unsigned long)lcd_expander_wait_ms,
-                      (unsigned long)first_screen_ms, millis() / 1000, reset_reason(), BATTERY_GAUGE,
-                      EXPANDER_REFRESH, lcd_expander_errors, bad_reads, backlight);
+    last_raw = raw;
+    battery_mv = mv_avg;
+    battery_bad_reads = bad_reads;
+    reads++;
     shared_set_battery(battery);
+}
+
+/* About every 10 s, with the start-up timings: the USB serial port
+ * reconnects only after the start, so the log lines printed then are
+ * usually missed. */
+void log_status() {
+    Serial.printf("battery raw=%d mv=%.0f %d%% | LCD up %u time(s), last: expander answered after %lu ms, "
+                  "first screen at %lu ms | uptime %lu s, started by %s | gauge %d refresh %d | "
+                  "I2C errors %u, bad battery reads %u, backlight %d%%\n",
+                  last_raw, battery_mv, battery, bring_ups, (unsigned long)lcd_expander_wait_ms,
+                  (unsigned long)first_screen_ms, millis() / 1000, reset_reason(), BATTERY_GAUGE, EXPANDER_REFRESH,
+                  lcd_expander_errors, battery_bad_reads, backlight);
 }
 
 /* ---- backlight and power saving ----
@@ -670,15 +683,7 @@ void lcd_task(void *) {
     }
     bring_up();
     bool expander_lost = false;
-    uint32_t last_draw = millis(), last_battery = last_draw;
-    /* After a reset the I/O expander restarts too and takes a varying time
-     * (seen: 3-8 s) before it carries out commands; until then the screen
-     * stays dark although it is drawn. For the first 15 s its pins and the
-     * backlight, and the LCD set-up, are sent again every 0.25 s and the
-     * screen redrawn, so it shows within 0.25 s of the expander being ready.
-     * On a screen already showing this changes nothing visible. */
-    const uint32_t startup_until = millis() + 15000;
-    uint32_t last_reassert = 0;
+    uint32_t last_draw = millis(), last_battery = last_draw, last_refresh = last_draw, last_log = 0;
     bool dirty = true, down = false;
     bool waking = false; /* the touch that woke the screen does nothing else */
     int up_polls = 0;
@@ -691,10 +696,14 @@ void lcd_task(void *) {
                 cfg = shared_config();
                 waking = backlight < cfg.lcd_bright;
                 last_touch = millis();
-                if (waking) update_backlight(last_touch);
-                else if (screen == MAIN) press_main(x, y);
-                else if (screen == SETTINGS) press_settings(x, y);
-                else press_advanced(x, y);
+                if (waking) {
+                    update_backlight(last_touch);
+                } else {
+                    lcd_backlight(backlight); /* in case the expander lost it */
+                    if (screen == MAIN) press_main(x, y);
+                    else if (screen == SETTINGS) press_settings(x, y);
+                    else press_advanced(x, y);
+                }
                 cfg = shared_config(); /* a changed brightness applies at once */
             } else if (dragging) {
                 drag_to(x);
@@ -718,18 +727,20 @@ void lcd_task(void *) {
             dirty = true;
         }
         uint32_t now = millis();
-        if ((int32_t)(startup_until - now) > 0 && now - last_reassert >= 250 && backlight != 0) {
-            last_reassert = now;
-            lcd_board_reassert(backlight < 0 ? 0 : backlight);
-            dirty = true;
-            last_draw = now - 1000; /* redraw now */
+        if (now - last_log >= 10000) {
+            last_log = now;
+            log_status();
         }
-        if (now - last_battery >= 2000) {
+        if (now - last_battery >= BATTERY_READ_MS) {
             last_battery = now;
+            read_battery();
+        }
+        if (EXPANDER_REFRESH && now - last_refresh >= 2000) {
+            last_refresh = now;
             /* An expander that stops answering may have restarted (supply
              * dip) and reset the LCD with it: bring everything up again
              * once it answers. */
-            if (EXPANDER_REFRESH && !lcd_board_refresh(backlight < 0 ? 0 : backlight)) {
+            if (!lcd_board_refresh(backlight < 0 ? 0 : backlight)) {
                 if (!expander_lost) Serial.printf("[%lu ms] LCD: I/O expander lost\n", now);
                 expander_lost = true;
                 continue;
@@ -740,7 +751,6 @@ void lcd_task(void *) {
                 last_draw = millis();
                 continue;
             }
-            read_battery();
         }
         update_backlight(now);
         if (backlight == 0) { /* screen off: nothing to draw */
