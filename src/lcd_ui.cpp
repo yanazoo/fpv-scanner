@@ -587,15 +587,21 @@ const char *reset_reason() {
     }
 }
 
+int backlight = -1;       /* percent currently set, -1 = not yet */
 unsigned bring_ups;       /* LCD bring-ups since start */
 uint32_t first_screen_ms; /* time of the last bring-up's first screen */
 
 void read_battery() {
     static float mv_avg;
-    static unsigned reads, misses;
+    static unsigned reads, misses, bad_reads;
     int raw = BATTERY_GAUGE ? lcd_battery_raw() : -1;
     float mv = raw * BATTERY_MV_PER_COUNT;
-    if (raw < 0 || mv < 2500 || mv > 4600) {
+    /* A reading far from the average is a garbled transfer (seen: 67
+     * instead of about 435), not the battery: it is dropped. */
+    bool garbled = raw >= 0 && mv_avg && fabsf(mv - mv_avg) > 300;
+    if (garbled) bad_reads++;
+    if (garbled) {
+    } else if (raw < 0 || mv < 2500 || mv > 4600) {
         /* No battery, or a failed read: hide the level only when it lasts,
          * so a single bad read does not make it flicker. */
         if (++misses >= 3) {
@@ -612,10 +618,11 @@ void read_battery() {
      * usually missed. */
     if (reads++ % 5 == 0)
         Serial.printf("battery raw=%d mv=%.0f %d%% | LCD up %u time(s), last: expander answered after %lu ms, "
-                      "first screen at %lu ms | uptime %lu s, started by %s | gauge %d refresh %d\n",
+                      "first screen at %lu ms | uptime %lu s, started by %s | gauge %d refresh %d | "
+                      "I2C errors %u, bad battery reads %u, backlight %d%%\n",
                       raw, mv_avg, battery, bring_ups, (unsigned long)lcd_expander_wait_ms,
                       (unsigned long)first_screen_ms, millis() / 1000, reset_reason(), BATTERY_GAUGE,
-                      EXPANDER_REFRESH);
+                      EXPANDER_REFRESH, lcd_expander_errors, bad_reads, backlight);
     shared_set_battery(battery);
 }
 
@@ -624,7 +631,6 @@ void read_battery() {
  * as long again it goes off; a touch brings it back (and does nothing else).
  * The backlight is set only here, from the setting and the idle time. */
 uint32_t last_touch;
-int backlight = -1; /* percent currently set, -1 = not yet */
 
 int wanted_backlight(uint32_t now) {
     if (cfg.lcd_sleep <= 0) return cfg.lcd_bright;
@@ -665,6 +671,14 @@ void lcd_task(void *) {
     bring_up();
     bool expander_lost = false;
     uint32_t last_draw = millis(), last_battery = last_draw;
+    /* After a reset the I/O expander restarts too and takes a varying time
+     * (seen: 3-8 s) before it carries out commands; until then the screen
+     * stays dark although it is drawn. For the first 15 s its pins and the
+     * backlight, and the LCD set-up, are sent again every 0.25 s and the
+     * screen redrawn, so it shows within 0.25 s of the expander being ready.
+     * On a screen already showing this changes nothing visible. */
+    const uint32_t startup_until = millis() + 15000;
+    uint32_t last_reassert = 0;
     bool dirty = true, down = false;
     bool waking = false; /* the touch that woke the screen does nothing else */
     int up_polls = 0;
@@ -704,6 +718,12 @@ void lcd_task(void *) {
             dirty = true;
         }
         uint32_t now = millis();
+        if ((int32_t)(startup_until - now) > 0 && now - last_reassert >= 250 && backlight != 0) {
+            last_reassert = now;
+            lcd_board_reassert(backlight < 0 ? 0 : backlight);
+            dirty = true;
+            last_draw = now - 1000; /* redraw now */
+        }
         if (now - last_battery >= 2000) {
             last_battery = now;
             /* An expander that stops answering may have restarted (supply

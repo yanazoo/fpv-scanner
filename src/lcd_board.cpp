@@ -6,6 +6,8 @@
 #include <Wire.h>
 #include "config.h"
 
+unsigned lcd_expander_errors;
+
 namespace {
 const int PIN_SCLK = 6, PIN_MOSI = 7, PIN_LCD_CS = 10, PIN_LCD_DC = 9, PIN_SD_CS = 23;
 const int PIN_SDA = 0, PIN_SCL = 1;
@@ -25,7 +27,9 @@ bool exio_write(uint8_t reg, uint8_t value) {
     Wire.beginTransmission(EXIO_ADDR);
     Wire.write(reg);
     Wire.write(value);
-    return Wire.endTransmission() == 0;
+    bool ok = Wire.endTransmission() == 0;
+    if (!ok) lcd_expander_errors++;
+    return ok;
 }
 
 void exio_set(uint8_t pin, bool level) {
@@ -70,12 +74,16 @@ bool touch_access(uint32_t reg, uint8_t *data, size_t size) {
 
 uint32_t lcd_expander_wait_ms;
 bool lcd_touch_begin();
+static void lcd_panel_setup(unsigned sleep_out_ms);
 
 bool lcd_board_begin(unsigned backlight_percent) {
     static bool wire_started;
     if (!wire_started) {
         Wire.begin(PIN_SDA, PIN_SCL);
-        Wire.setClock(400000);
+        /* 100 kHz rather than the 400 kHz of Waveshare's examples: the
+         * expander (a CH32V003 answering in firmware) once returned a wrong
+         * battery reading, so the bus is slowed for margin. */
+        Wire.setClock(100000);
         wire_started = true;
     }
     /* The LCD reset and backlight go through the I/O expander, a CH32V003
@@ -107,8 +115,20 @@ bool lcd_board_begin(unsigned backlight_percent) {
     delay(50);
     exio_set(EXIO_LCD_RST, true);
     delay(120);
+    lcd_panel_setup(120);
+
+    lcd_touch_begin();
+    lcd_backlight(backlight_percent);
+    Serial.printf("[%lu ms] LCD: ready (expander answered after %lu ms)\n", millis(),
+                  (unsigned long)lcd_expander_wait_ms);
+    return true;
+}
+
+/* ST7789 set-up after a reset: sleep out (the next command may follow after
+ * 5 ms; 120 ms after a reset), then the panel registers and display on. */
+static void lcd_panel_setup(unsigned sleep_out_ms) {
     lcd_command(0x11); /* sleep out */
-    delay(120);
+    delay(sleep_out_ms);
     lcd_command(0x36, {0x00}); /* portrait, RGB */
     lcd_command(0x3A, {0x05}); /* 16 bits per pixel */
     lcd_command(0xB0, {0x00, 0xE8}); /* RAMCTRL: little-endian pixels */
@@ -126,18 +146,18 @@ bool lcd_board_begin(unsigned backlight_percent) {
     lcd_command(0xE1, {0xD0, 0x09, 0x0F, 0x08, 0x07, 0x14, 0x37, 0x44, 0x4D, 0x38, 0x15, 0x16, 0x2C, 0x2E});
     lcd_command(0x21); /* inversion on (IPS panel) */
     lcd_command(0x29); /* display on */
-
-    lcd_touch_begin();
-    lcd_backlight(backlight_percent);
-    Serial.printf("[%lu ms] LCD: ready (expander answered after %lu ms)\n", millis(),
-                  (unsigned long)lcd_expander_wait_ms);
-    return true;
 }
 
 bool lcd_backlight(unsigned percent) { return exio_write(EXIO_PWM, min(percent, 100u) * 255 / 100); }
 
 bool lcd_board_refresh(unsigned backlight_percent) {
     return exio_write(EXIO_MODE, 0xFF) && exio_write(EXIO_OUTPUT, exio_out) && lcd_backlight(backlight_percent);
+}
+
+bool lcd_board_reassert(unsigned backlight_percent) {
+    bool ok = lcd_board_refresh(backlight_percent);
+    lcd_panel_setup(10);
+    return ok;
 }
 
 bool lcd_touch_begin() {
@@ -159,7 +179,10 @@ void lcd_push_rows(int y, int rows, const uint16_t *pixels) {
 int lcd_battery_raw() {
     Wire.beginTransmission(EXIO_ADDR);
     Wire.write(EXIO_ADC);
-    if (Wire.endTransmission(false) || Wire.requestFrom(EXIO_ADDR, (uint8_t)2) != 2) return -1;
+    if (Wire.endTransmission(false) || Wire.requestFrom(EXIO_ADDR, (uint8_t)2) != 2) {
+        lcd_expander_errors++;
+        return -1;
+    }
     int lo = Wire.read();
     return lo | Wire.read() << 8;
 }

@@ -10,10 +10,16 @@ static const int LCD_W = 240, LCD_H = 320;
 bool lcd_board_begin(unsigned backlight_percent);
 /* How long the last lcd_board_begin() waited for the expander, in ms. */
 extern uint32_t lcd_expander_wait_ms;
+/* I2C transfers to the I/O expander that failed (not acknowledged). */
+extern unsigned lcd_expander_errors;
 bool lcd_backlight(unsigned percent);
 /* Writes the expander's pin setup and backlight again (an expander that
  * restarted would have dropped them); false when it does not answer. */
 bool lcd_board_refresh(unsigned backlight_percent);
+/* lcd_board_refresh() plus the LCD's register set-up again (no reset, no
+ * visible change on a running LCD): recovers an LCD that the expander reset
+ * while it was still starting up. */
+bool lcd_board_reassert(unsigned backlight_percent);
 /* Sends rows y .. y + rows - 1, full width, RGB565 in native byte order. */
 void lcd_push_rows(int y, int rows, const uint16_t *pixels);
 /* First touch point in screen coordinates; false when not touched. */
