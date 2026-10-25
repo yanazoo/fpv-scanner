@@ -82,6 +82,7 @@ static void load_settings() {
     c.yrange = prefs.getInt("yrange", c.yrange);
     c.lcd_bright = prefs.getInt("lbright", c.lcd_bright);
     c.lcd_sleep = prefs.getInt("lsleep", c.lcd_sleep);
+    c.lcd_land = prefs.getBool("lland", c.lcd_land);
     /* NSE2: references saved by earlier builds did not track the receiver
      * settings they were taken with, so they are discarded once. */
     has_noise = prefs.getBytes("noise", noise, sizeof(noise)) == sizeof(noise) && !memcmp(noise, "NSE2", 4);
@@ -109,6 +110,7 @@ static void save_settings() {
     prefs.putInt("yrange", c.yrange);
     prefs.putInt("lbright", c.lcd_bright);
     prefs.putInt("lsleep", c.lcd_sleep);
+    prefs.putBool("lland", c.lcd_land);
 }
 
 static void put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
@@ -346,6 +348,7 @@ static void handle_text(const char *text) {
         else if (!strcmp(key, "yrange")) c.yrange = constrain(value, 10, 150);
         else if (!strcmp(key, "lbright")) c.lcd_bright = constrain(value, 10, 100);
         else if (!strcmp(key, "lsleep")) c.lcd_sleep = constrain(value, 0, 600);
+        else if (!strcmp(key, "lland")) c.lcd_land = value != 0;
     }
     if (c.stop_mhz < c.start_mhz + 5) c.stop_mhz = c.start_mhz + 5;
     xSemaphoreTake(lock, portMAX_DELAY);

@@ -41,18 +41,21 @@ uint16_t dim(uint16_t c) { return (c >> 1) & 0x7BEF; }
 
 /* ---- drawing into the current strip ---- */
 const int STRIP = 40;
-uint16_t *buf;
+uint16_t *buf; /* STRIP rows of the widest screen (320) */
 int strip_y;
+/* Logical screen size: 240x320 portrait, 320x240 landscape (main screen). */
+int scr_w = LCD_W, scr_h = LCD_H;
+bool landscape;
 
 void fill(int x, int y, int w, int h, uint16_t c) {
-    int y0 = max(y, strip_y), y1 = min(y + h, strip_y + STRIP), x0 = max(x, 0), x1 = min(x + w, LCD_W);
+    int y0 = max(y, strip_y), y1 = min(y + h, strip_y + STRIP), x0 = max(x, 0), x1 = min(x + w, scr_w);
     for (int yy = y0; yy < y1; yy++) {
-        uint16_t *p = buf + (yy - strip_y) * LCD_W;
+        uint16_t *p = buf + (yy - strip_y) * scr_w;
         for (int xx = x0; xx < x1; xx++) p[xx] = c;
     }
 }
 void pixel(int x, int y, uint16_t c) {
-    if ((unsigned)x < (unsigned)LCD_W && y >= strip_y && y < strip_y + STRIP) buf[(y - strip_y) * LCD_W + x] = c;
+    if ((unsigned)x < (unsigned)scr_w && y >= strip_y && y < strip_y + STRIP) buf[(y - strip_y) * scr_w + x] = c;
 }
 void vline(int x, int y0, int y1, uint16_t c) {
     if (y0 > y1) std::swap(y0, y1);
@@ -185,13 +188,47 @@ void take_frame() {
     warn = top / 2.0f - 84.3f > -30;
 }
 
-/* ---- main screen geometry ---- */
-const int PX = 32, PY = 18, PW = LCD_W - PX, PH = 150;
-const int TY = PY + PH + 20; /* marker table */
-const int ROW = 20;
+/* ---- main screen geometry ----
+ * Portrait: graph, marker table (4 rows) and a row of buttons below.
+ * Landscape: graph almost the full width, the markers in one row of four
+ * cells (level, whole MHz) below; the buttons are on a panel that slides in
+ * from the right when the tab on the right edge (or, with no marker
+ * selected, the graph) is tapped, and slides out after PANEL_MS without a
+ * tap on it. */
+const int PX = 32, PY = 18;
+const int MAX_PW = 288;
+int PW, PH; /* graph width and height */
+int TY;     /* marker table (portrait: its header line) */
+const int ROW = 20;          /* portrait table rows */
+const int LROW = 18;         /* landscape marker row */
+const int TAB_W = 16;        /* landscape: tab that opens the button panel */
+const int PANEL_W = 72;      /* landscape: button panel */
+const uint32_t PANEL_MS = 5000;
+bool panel_open;
+int panel_px;                /* how far the panel has slid in, 0 .. PANEL_W */
+uint32_t panel_until;
+void open_panel() {
+    panel_open = true;
+    panel_until = millis() + PANEL_MS;
+}
 /* peak hold and average (toggles), peak hold reset, settings */
-const Rect BTN_HOLD{0, 288, 57, 32}, BTN_AVG{61, 288, 57, 32}, BTN_RESET{122, 288, 57, 32},
-    BTN_SETTINGS{183, 288, 57, 32};
+Rect BTN_HOLD, BTN_AVG, BTN_RESET, BTN_SETTINGS;
+
+void set_layout(bool land) {
+    landscape = land;
+    if (!land) {
+        scr_w = LCD_W, scr_h = LCD_H;
+        PW = LCD_W - PX, PH = 150;
+        TY = PY + PH + 20;
+        BTN_HOLD = {0, 288, 57, 32}, BTN_AVG = {61, 288, 57, 32}, BTN_RESET = {122, 288, 57, 32},
+        BTN_SETTINGS = {183, 288, 57, 32};
+    } else {
+        scr_w = LCD_H, scr_h = LCD_W;
+        PW = scr_w - TAB_W - PX, PH = 184;
+        TY = PY + PH + 20;
+        panel_open = false, panel_px = 0;
+    }
+}
 
 int fx(double f) { return PX + (int)lround((f - f0) / (f1 - f0) * PW); }
 int dy(float d) {
@@ -222,7 +259,7 @@ void nearest_channel(double f, char *out) {
 
 /* Each trace is reduced to one y per graph column (maximum of its points),
  * computed once per frame and drawn into every strip. */
-int16_t col_noise[PW], col_peak[PW], col_main[PW];
+int16_t col_noise[MAX_PW], col_peak[MAX_PW], col_main[MAX_PW];
 void columns(int16_t *out, const uint8_t *t, unsigned n, double a, double b) {
     for (int x = 0; x < PW; x++) {
         double fa = f0 + (f1 - f0) * x / PW, fb = f0 + (f1 - f0) * (x + 1) / PW;
@@ -255,17 +292,18 @@ void draw_main() {
     if (battery >= 0) {
         snprintf(s, sizeof(s), "%d%%", battery);
         if (battery < BATTERY_LOW_PERCENT && millis() / 500 % 2) {
-            fill(LCD_W - text_width(s) - 2, 0, text_width(s) + 2, 16, RED);
-            text_right(LCD_W - 1, 0, s, WHITE);
+            fill(scr_w - text_width(s) - 2, 0, text_width(s) + 2, 16, RED);
+            text_right(scr_w - 1, 0, s, WHITE);
         } else
-            text_right(LCD_W - 1, 0, s, battery < BATTERY_LOW_PERCENT ? RED : battery < 50 ? YELLOW : GREEN);
+            text_right(scr_w - 1, 0, s, battery < BATTERY_LOW_PERCENT ? RED : battery < 50 ? YELLOW : GREEN);
     }
 
+    const int GR = PX + PW; /* graph right edge */
     /* dBm grid and axis */
     int step = 10 * PH / cfg.yrange >= 18 ? 10 : 20;
     for (int d = (int)ceil((cfg.ytop - cfg.yrange) / (double)step) * step; d <= cfg.ytop; d += step) {
         int y = dy(d);
-        hline(PX, LCD_W - 1, y, GRID);
+        hline(PX, GR - 1, y, GRID);
         snprintf(s, sizeof(s), "%d", d);
         text_right(PX - 2, constrain(y - 8, PY, PY + PH - 16), s, GRAY);
     }
@@ -279,12 +317,12 @@ void draw_main() {
         }
     for (int f = (int)ceil(f0 / fstep) * fstep; f <= f1; f += fstep) {
         int fxp = fx(f);
-        vline(min(fxp, LCD_W - 1), PY, PY + PH - 1, GRID);
+        vline(min(fxp, GR - 1), PY, PY + PH - 1, GRID);
         snprintf(s, sizeof(s), "%d", f);
         int w = text_width(s);
-        text(constrain(fxp - w / 2, PX - 8, LCD_W - w), PY + PH + 2, s, GRAY);
+        text(constrain(fxp - w / 2, PX - 8, GR - w), PY + PH + 2, s, GRAY);
     }
-    hline(PX, LCD_W - 1, PY + PH, BORDER);
+    hline(PX, GR - 1, PY + PH, BORDER);
 
     /* FPV channels of the shown bands, one label lane per band */
     int lane = 0;
@@ -294,10 +332,10 @@ void draw_main() {
         for (int k = 0; k < 8; k++) {
             double f = BANDS[b][k];
             if (f < f0 || f > f1) continue;
-            int cx = min(fx(f), LCD_W - 1);
+            int cx = min(fx(f), GR - 1);
             for (int y = PY; y < PY + PH; y += 2) pixel(cx, y, dim(BCOL[b]));
             snprintf(s, sizeof(s), "%c%d", BAND_NAME[b], k + 1);
-            int lx = constrain(cx - 8, PX, LCD_W - 16);
+            int lx = constrain(cx - 8, PX, GR - 16);
             bool overlaps = false;
             for (int i = 0; i < count; i++) overlaps |= abs(placed[i] - lx) < 18;
             if (!overlaps) {
@@ -323,14 +361,50 @@ void draw_main() {
     }
 
     if (warn) {
-        fill(LCD_W - 98, PY, 98, 16, BLACK);
-        text_right(LCD_W - 1, PY, "ゲイン下げて", RED);
+        fill(GR - 98, PY, 98, 16, BLACK);
+        text_right(GR - 1, PY, "ゲイン下げて", RED);
     }
     if (st.error[0]) {
         fill(PX, PY + PH - 16, 152, 16, BLACK);
         text(PX, PY + PH - 16, "ゲイン範囲外→自動", YELLOW);
     }
 
+    if (landscape) {
+        /* markers in one row of four cells: a bar in the marker's colour
+         * (as its number on the graph), level and whole MHz */
+        const int CW = scr_w / 4;
+        for (int m = 0; m < 4; m++) {
+            int x0 = m * CW, y = TY;
+            if (m == active) fill(x0, y, CW, LROW, PANEL);
+            fill(x0, y + 2, 2, LROW - 4, MCOL[m]);
+            y += (LROW - 16) / 2;
+            int t = marker_tenths(m);
+            float lv;
+            if (t >= 0 && level(t / 10.0, &lv)) snprintf(s, sizeof(s), "%.1f", lv);
+            else strcpy(s, "-");
+            text_right(x0 + 43, y, s, MCOL[m]);
+            /* the frequency dimmer, so that it reads apart from the level */
+            if (t >= 0) snprintf(s, sizeof(s), "%ld", lround(t / 10.0));
+            else strcpy(s, "-");
+            text_right(x0 + CW - 1, y, s, dim(MCOL[m]));
+        }
+        /* tab, and the sliding button panel over the graph */
+        if (panel_px < PANEL_W) {
+            fill(scr_w - TAB_W, PY, TAB_W, PH, PANEL);
+            text(scr_w - TAB_W + 4, PY + PH / 2 - 8, "◀", GRAY);
+        }
+        if (panel_px > 0) {
+            int px = scr_w - panel_px;
+            fill(px, PY, PANEL_W, PH + 2, BLACK);
+            vline(px, PY, PY + PH + 1, BORDER);
+            const int bh = (PH - 3 * 4) / 4;
+            BTN_HOLD = {px + 4, PY, PANEL_W - 4, bh}, BTN_AVG = {px + 4, PY + bh + 4, PANEL_W - 4, bh},
+            BTN_RESET = {px + 4, PY + 2 * (bh + 4), PANEL_W - 4, bh},
+            BTN_SETTINGS = {px + 4, PY + 3 * (bh + 4), PANEL_W - 4, bh};
+        } else {
+            return; /* buttons hidden */
+        }
+    } else {
     /* marker table */
     text(0, TY, "マーカー", GRAY);
     text_right(112, TY, "dBm", GRAY);
@@ -338,7 +412,7 @@ void draw_main() {
     text_right(236, TY, "MHz", GRAY);
     for (int m = 0; m < 4; m++) {
         int y = TY + 16 + m * ROW;
-        if (m == active) fill(0, y, LCD_W, ROW, PANEL);
+        if (m == active) fill(0, y, scr_w, ROW, PANEL);
         y += (ROW - 16) / 2;
         snprintf(s, sizeof(s), "M%d%s", m + 1, m == active ? "◀" : "");
         text(4, y, s, MCOL[m]);
@@ -353,6 +427,7 @@ void draw_main() {
         if (t >= 0) snprintf(s, sizeof(s), "%.1f", t / 10.0);
         else strcpy(s, "-");
         text_right(236, y, s, MCOL[m]);
+    }
     }
 
     button(BTN_HOLD, "Hold", cfg.hold);
@@ -370,6 +445,7 @@ const Rect BTN_TOP_DOWN{56, SY + SROW, 48, BH}, BTN_TOP_UP{192, SY + SROW, 48, B
 const Rect BTN_RANGE_DOWN{56, SY + 2 * SROW, 48, BH}, BTN_RANGE_UP{192, SY + 2 * SROW, 48, BH};
 Rect band_button(int b) { return {60 + b * 36, SY + 3 * SROW, 34, BH}; }
 const Rect BTN_NOISE_SAVE{96, SY + 4 * SROW, 68, BH}, BTN_NOISE_CLEAR{172, SY + 4 * SROW, 68, BH};
+const Rect BTN_PORTRAIT{96, SY + 5 * SROW + 16, 68, BH}, BTN_LANDSCAPE{172, SY + 5 * SROW + 16, 68, BH};
 
 void draw_settings() {
     char s[48];
@@ -407,6 +483,10 @@ void draw_settings() {
     else
         strcpy(s, "未保存（保存=今の平均線）");
     text(0, SY + 5 * SROW - 2, s, has_noise ? GREEN : GRAY);
+    /* main screen orientation (this screen stays portrait) */
+    text(0, SY + 5 * SROW + 16 + ty, "画面の向き", WHITE);
+    button(BTN_PORTRAIT, "縦", !cfg.lcd_land);
+    button(BTN_LANDSCAPE, "横", cfg.lcd_land);
 }
 
 /* ---- advanced settings screen: brightness and power saving ---- */
@@ -470,13 +550,35 @@ void set_marker(int tenths) {
     shared_apply(line);
 }
 
-bool in_graph(int x, int y) { return y >= PY && y < PY + PH && x >= PX; }
+bool on_panel(int x) { return landscape && panel_px > 0 && x >= scr_w - panel_px; }
+bool in_graph(int x, int y) { return y >= PY && y < PY + PH && x >= PX && x < PX + PW && !on_panel(x); }
 
 /* A tap on the main screen, on release (the graph is handled on press, by
  * dragging the selected marker). */
 void press_main(int x, int y) {
     if (in_graph(x, y)) {
+        if (landscape && active < 0) open_panel(); /* the graph has nothing else to do */
         return;
+    } else if (landscape) {
+        if (on_panel(x) && y < TY - 2) {
+            /* panel buttons: four rows, gaps included; each tap keeps the
+             * panel out for another PANEL_MS */
+            open_panel();
+            switch (constrain((y - PY) * 4 / PH, 0, 3)) {
+            case 0: apply("cfg hold=%d", !cfg.hold); break;
+            case 1: apply("cfg avg=%d", !cfg.avg); break;
+            case 2: memcpy(peak, data, N); break;
+            default:
+                panel_open = false, panel_px = 0;
+                screen = SETTINGS;
+            }
+        } else if (x >= scr_w - TAB_W - 4 && y < TY - 2) {
+            open_panel();
+        } else if (y >= TY - 2) {
+            /* marker cells: tapping the selected one again releases it */
+            int m = min(x * 4 / scr_w, 3);
+            active = m == active ? -1 : m;
+        }
     } else if (y >= TY + 16 && y < TY + 16 + 4 * ROW) {
         /* Tapping the selected row again releases the selection; the marker
          * keeps its frequency and level. */
@@ -486,7 +588,7 @@ void press_main(int x, int y) {
         /* Bottom buttons: anything below the table counts, split into four
          * columns, so taps near the edges and corners (where the panel is
          * least accurate) and in the gaps still hit a button. */
-        switch (min(x * 4 / LCD_W, 3)) {
+        switch (min(x * 4 / scr_w, 3)) {
         case 0: apply("cfg hold=%d", !cfg.hold); break;
         case 1: apply("cfg avg=%d", !cfg.avg); break;
         case 2: memcpy(peak, data, N); break;
@@ -509,6 +611,8 @@ void press_settings(int x, int y) {
     char line[32];
     if (BTN_BACK.in(x, y)) screen = MAIN;
     else if (BTN_ADVANCED.in(x, y)) screen = ADVANCED;
+    else if (BTN_PORTRAIT.in(x, y)) apply("cfg lland=%d", 0);
+    else if (BTN_LANDSCAPE.in(x, y)) apply("cfg lland=%d", 1);
     else if (BTN_PEAK.in(x, y) && have && active >= 0) {
         const uint8_t *t = trace();
         unsigned k = 0;
@@ -559,6 +663,11 @@ void poll_touch() {
     int x, y;
     uint32_t now = millis();
     if (lcd_touch(&x, &y)) {
+        if (landscape) { /* portrait panel coordinates to the rotated screen */
+            int px = x;
+            x = LCD_LANDSCAPE_FLIP ? LCD_H - 1 - y : y;
+            y = LCD_LANDSCAPE_FLIP ? px : LCD_W - 1 - px;
+        }
         if (!touch.down) {
             touch.down = true;
             touch.pressed = true;
@@ -574,6 +683,12 @@ void poll_touch() {
 
 void render() {
     cfg = shared_config();
+    /* only the main screen turns to landscape */
+    bool land = screen == MAIN && cfg.lcd_land;
+    if (land != landscape) {
+        lcd_set_landscape(land);
+        set_layout(land);
+    }
     st = shared_status();
     has_noise = shared_noise(noise);
     /* Peak and average restart when the receiver settings change (as on the
@@ -595,12 +710,12 @@ void render() {
                 columns(col_noise, noise + FRAME_HEADER, N, get32(noise + 4) / 1000.0, get32(noise + 8) / 1000.0);
         }
     }
-    for (strip_y = 0; strip_y < LCD_H; strip_y += STRIP) {
-        memset(buf, 0, LCD_W * STRIP * sizeof(uint16_t));
+    for (strip_y = 0; strip_y < scr_h; strip_y += STRIP) {
+        memset(buf, 0, scr_w * STRIP * sizeof(uint16_t));
         if (screen == MAIN) draw_main();
         else if (screen == SETTINGS) draw_settings();
         else draw_advanced();
-        lcd_push_rows(strip_y, STRIP, buf);
+        lcd_push_rows(strip_y, STRIP, scr_w, buf);
         poll_touch();
     }
 }
@@ -720,6 +835,7 @@ void bring_up() {
     backlight = wanted_backlight(last_touch);
     while (!lcd_board_begin()) {
     }
+    set_layout(false); /* the LCD set-up leaves it in portrait */
     bring_ups++;
     read_battery();
     render();
@@ -730,7 +846,7 @@ void bring_up() {
 }
 
 void lcd_task(void *) {
-    buf = (uint16_t *)malloc(LCD_W * STRIP * sizeof(uint16_t));
+    buf = (uint16_t *)malloc(LCD_H * STRIP * sizeof(uint16_t));
     if (!buf) {
         Serial.println("LCD: no memory for the strip buffer");
         vTaskDelete(nullptr);
@@ -813,6 +929,16 @@ void lcd_task(void *) {
                 continue;
             }
         }
+        /* landscape button panel: hide after PANEL_MS, slide in or out */
+        bool sliding = false;
+        if (landscape && screen == MAIN) {
+            if (panel_open && (int32_t)(panel_until - now) <= 0) panel_open = false;
+            int target = panel_open ? PANEL_W : 0;
+            if (panel_px != target) {
+                panel_px += constrain(target - panel_px, -24, 24);
+                sliding = true;
+            }
+        }
         update_backlight(now);
         if (backlight == 0) { /* screen off: nothing to draw */
             vTaskDelay(pdMS_TO_TICKS(20));
@@ -820,7 +946,7 @@ void lcd_task(void *) {
         }
         /* a low battery blinks: redraw every half second */
         if (battery >= 0 && battery < BATTERY_LOW_PERCENT && now / 500 != last_draw / 500) dirty = true;
-        if ((dirty && now - last_draw >= 80) || now - last_draw >= 1000) {
+        if (sliding || (dirty && now - last_draw >= 80) || now - last_draw >= 1000) {
             render();
             last_draw = now;
             dirty = false;
