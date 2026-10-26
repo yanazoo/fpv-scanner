@@ -92,6 +92,20 @@ TX と RX はたすき掛けです。C5 は無線起動時に電流が増える�
   BOOT を離してから Upload する（書き込み後は RESET を押す）
 - USB ハブを使わず PC に直接つなぎ、データ通信対応のケーブルを使う
 
+### XIAO ESP32-S3 の代わりに XIAO ESP32-C5 を使う場合
+
+受信用とは別のもう 1 台の Seeed Studio XIAO ESP32-C5 を、S3 の代わりに Web サーバー
+（アクセスポイント）として使えます。画面や操作は S3 版と同じです。
+
+- **配線は S3 と同じ**です（受信用 C5 の D6 → 表示用 C5 の D7、受信用 C5 の D7 → 表示用 C5 の D6、
+  GND どうし）。
+- VS Code で **`xiao_c5` フォルダ**を開いてビルド・書き込みします（ソースは共通の `src`。
+  部品は液晶版と同じ `ユーザーフォルダ\.platformio\c5\` を使います）。
+- 書き込み先の COM ポートが見つからないときは、`xiao_c5/platformio.ini` に
+  `upload_port = COMx` を追加してください。
+- C5 は 2.4GHz と 5GHz の両方を使えるチップですが、アクセスポイントは 2.4GHz（チャネル 1）に
+  固定しているので、受信の邪魔にはなりません。
+
 ## 4. 使い方
 
 1. 両方のボードに電源を入れる
@@ -342,6 +356,7 @@ Web 画面の「液晶」欄は 2.8 インチ液晶版でも表示され、同�
 - `platformio.ini`: PlatformIO 設定（S3 版）
 - `c5_touch_lcd/platformio.ini`: 液晶版の PlatformIO 設定（このフォルダを開いてビルド）
 - `c5_lcd147/platformio.ini`: 1.47 インチ液晶版の PlatformIO 設定（このフォルダを開いてビルド）
+- `xiao_c5/platformio.ini`: S3 の代わりに XIAO ESP32-C5 を使う版の PlatformIO 設定（このフォルダを開いてビルド）
 - `src/lcd147_board.cpp`: 1.47 インチ液晶ボードの制御（ST7789、バックライト、BOOT ボタン）
 - `src/config.h`: Wi-Fi 名・パスワード、UART ピン、初回起動時のスパン
 - `src/sdr_link.*`: ESP-SDR の UART プロトコル（`SYNC`, `FREQ`, `SPEC`）クライアント

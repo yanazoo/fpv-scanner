@@ -55,6 +55,14 @@
 #define BATTERY_READ_MS  30000 /* battery read interval */
 #define BATTERY_GAUGE    1
 #define EXPANDER_REFRESH 0
+#elif FPV_XIAO_C5
+/* A second XIAO ESP32-C5 as the front end (web page only):
+ * front D7 (GPIO12, RX) <- receiver C5 D6 (GPIO11, TX)
+ * front D6 (GPIO11, TX) -> receiver C5 D7 (GPIO12, RX), plus a common GND.
+ * The same pins and wiring as the S3; on the C5 they are UART0's, used here
+ * as Serial1 (Serial is the USB port). */
+#define SDR_RX_PIN 12
+#define SDR_TX_PIN 11
 #else
 /* XIAO S3 D7 (GPIO44, RX) <- C5 D6 (GPIO11, TX)
  * XIAO S3 D6 (GPIO43, TX) -> C5 D7 (GPIO12, RX), plus a common GND. */
