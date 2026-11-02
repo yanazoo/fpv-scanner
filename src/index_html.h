@@ -50,6 +50,7 @@ td.ch{cursor:pointer}#mt td:first-child,#mt th:first-child{width:1%;white-space:
  <label>検波 <select id="det"><option value="1">最大</option><option value="0">平均</option></select></label>
  <label>ゲイン <input type="number" id="gain"> <span id="grange" style="font-size:12px;color:#8b949e">-1=自動、2〜（小さいほど強い電波向き、大きいほど弱い電波向き）</span></label>
  <label>補正 <input type="number" id="cal" step="0.1"> dB</label>
+ <label>「ゲイン下げて」 <input type="number" id="warnd" min="-60" max="0" step="1"> dBFS 超</label>
  <button id="applyr">適用</button>
 </div></div>
 
@@ -105,17 +106,17 @@ function renderFpv(){$('fpv').innerHTML='<tr><th></th>'+[1,2,3,4,5,6,7,8].map(c=
 function placed(){renderFpv();redraw();const s=(cfg.markers||[]).map(t=>t<0?null:t/10);$('msave').classList.toggle('dirty',markers.some((f,m)=>f!==(s[m]??null)))}
 // ---- settings: forms are filled from the saved values once, then edited until applied
 function fillForm(s){$('start').value=s.start;$('stop').value=s.stop;$('rate').value=s.rate;$('dwell').value=s.dwell;$('det').value=s.det;
- $('gain').value=s.gain;$('cal').value=(s.cal/10).toFixed(1);$('hold').checked=!!s.hold;$('avg').checked=!!s.avg;$('ytop').value=s.ytop;$('yrng').value=s.yrange;
+ $('gain').value=s.gain;$('cal').value=(s.cal/10).toFixed(1);$('warnd').value=s.warn??-15;$('hold').checked=!!s.hold;$('avg').checked=!!s.avg;$('ytop').value=s.ytop;$('yrng').value=s.yrange;
  document.querySelectorAll('#bandsel input').forEach(i=>i.checked=shown(i.dataset.b));markers=s.markers.map(t=>t<0?null:t/10);placed()}
 function send(t){if(ws&&ws.readyState===1){ws.send(t);return true}alert('S3に接続されていません');return false}
 function apply(t,btn){if(send(t))btn.classList.remove('dirty')}
 const dirtyOn=(ids,btn)=>ids.forEach(id=>$(id).oninput=()=>$(btn).classList.add('dirty'));
-dirtyOn(['start','stop'],'applys');dirtyOn(['lbright','lsleep','lflip'],'applyl');dirtyOn(['rate','dwell','det','gain','cal'],'applyr');
+dirtyOn(['start','stop'],'applys');dirtyOn(['lbright','lsleep','lflip'],'applyl');dirtyOn(['rate','dwell','det','gain','cal','warnd'],'applyr');
 document.querySelectorAll('.pre').forEach(b=>b.onclick=()=>{$('start').value=b.dataset.a;$('stop').value=b.dataset.b;$('applys').classList.add('dirty')});
 $('applys').onclick=()=>{const a=Math.round(+$('start').value),b=Math.max(a+5,Math.round(+$('stop').value));apply(`cfg start=${a} stop=${b}`,$('applys'))};
 // LCD builds only: backlight, power saving, landscape turned over
 $('applyl').onclick=()=>apply(`cfg lbright=${Math.round(+$('lbright').value)} lsleep=${Math.round(+$('lsleep').value)} lflip=${+$('lflip').checked}`,$('applyl'));
-$('applyr').onclick=()=>apply(`cfg rate=${$('rate').value} dwell=${$('dwell').value} det=${$('det').value} gain=${$('gain').value} cal=${Math.round(+$('cal').value*10)}`,$('applyr'));
+$('applyr').onclick=()=>apply(`cfg rate=${$('rate').value} dwell=${$('dwell').value} det=${$('det').value} gain=${$('gain').value} cal=${Math.round(+$('cal').value*10)} warn=${Math.round(+$('warnd').value)}`,$('applyr'));
 // Display settings take effect at once; the S3 saves them after typing pauses.
 let dispTimer,dispEdit=0;
 function display(){const top=Math.round(+$('ytop').value),yr=Math.round(+$('yrng').value);if(!isFinite(top)||!(yr>=10))return;
@@ -163,8 +164,8 @@ function onFrame(buf){const v=new DataView(buf),magic=v.getUint32(0,true),a=v.ge
  if(magic!==0x31565046)return;
  if(a!==f0||b!==f1||!data||data.length!==t.length){f0=a;f1=b;peak=null;avg=null}
  data=Uint8Array.from(t);peak=peak?peak.map((p,i)=>Math.max(p,t[i])):Uint8Array.from(t);avg=avg?avg.map((p,i)=>!t[i]?p:!p?t[i]:p*0.8+t[i]*0.2):Float32Array.from(t);
- // Wide signals near -30 dBFS per bin already add up to ADC full scale.
- const w=Math.max(...t)/2-84.3>-30?'ゲイン下げて':'';if(w!==warn){warn=w;showErr()}redraw()}
+ // Saturation hint: the strongest point above the set dBFS (cfg.warn).
+ const w=Math.max(...t)/2-84.3>(cfg.warn??-15)?'ゲイン下げて':'';if(w!==warn){warn=w;showErr()}redraw()}
 function connect(){ws=new WebSocket('ws://'+location.hostname+':81/');ws.binaryType='arraybuffer';lastMsg=Date.now();
  ws.onmessage=e=>{lastMsg=Date.now();typeof e.data==='string'?onStatus(JSON.parse(e.data)):onFrame(e.data)};
  ws.onclose=()=>{$('st').textContent='再接続中';$('st').className='ng';setTimeout(connect,1000)}}

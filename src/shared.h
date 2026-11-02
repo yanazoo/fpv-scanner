@@ -12,6 +12,7 @@ struct SweepConfig {
     int gain = 10; /* -1: hardware AGC, otherwise a PHY gain index */
     /* Display only; changing them does not restart the sweep. */
     int cal_tenths = 0;      /* dBm = dBFS + cal_tenths / 10 */
+    int warn_dbfs = -15;     /* "ゲイン下げて" when a point exceeds this (dBFS) */
     unsigned bands = 0x11;   /* FPV band lines shown: bit 0 A, 1 B, 2 E, 3 F, 4 R */
     int markers[4] = {-1, -1, -1, -1}; /* tenths of MHz, -1 = unset */
     bool hold = false, avg = false;    /* peak-hold / averaged trace */
@@ -19,6 +20,9 @@ struct SweepConfig {
     /* LCD build: backlight (%) and seconds without a touch until the screen
      * dims (it goes dark after as long again); 0 = never. */
     int lcd_bright = 100, lcd_sleep = 0;
+    /* landscape button panel: seconds it stays out without a tap, 0 = until
+     * a button (or the tab) is tapped */
+    int lcd_panel = 5;
     bool lcd_land = false; /* main screen in landscape (settings stay portrait) */
     bool lcd_flip = false; /* landscape turned by 180 degrees */
 };

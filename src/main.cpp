@@ -74,6 +74,7 @@ static void load_settings() {
     c.max_hold = prefs.getBool("det", c.max_hold);
     c.gain = prefs.getInt("gain", c.gain);
     c.cal_tenths = prefs.getInt("cal", c.cal_tenths);
+    c.warn_dbfs = prefs.getInt("warn", c.warn_dbfs);
     c.bands = prefs.getUInt("bands", c.bands);
     prefs.getBytes("markers", c.markers, sizeof(c.markers));
     c.hold = prefs.getBool("hold", c.hold);
@@ -82,6 +83,7 @@ static void load_settings() {
     c.yrange = prefs.getInt("yrange", c.yrange);
     c.lcd_bright = prefs.getInt("lbright", c.lcd_bright);
     c.lcd_sleep = prefs.getInt("lsleep", c.lcd_sleep);
+    c.lcd_panel = prefs.getInt("lpanel", c.lcd_panel);
     c.lcd_land = prefs.getBool("lland", c.lcd_land);
     c.lcd_flip = prefs.getBool("lflip", c.lcd_flip);
     /* NSE2: references saved by earlier builds did not track the receiver
@@ -103,6 +105,7 @@ static void save_settings() {
     prefs.putBool("det", c.max_hold);
     prefs.putInt("gain", c.gain);
     prefs.putInt("cal", c.cal_tenths);
+    prefs.putInt("warn", c.warn_dbfs);
     prefs.putUInt("bands", c.bands);
     prefs.putBytes("markers", c.markers, sizeof(c.markers));
     prefs.putBool("hold", c.hold);
@@ -111,6 +114,7 @@ static void save_settings() {
     prefs.putInt("yrange", c.yrange);
     prefs.putInt("lbright", c.lcd_bright);
     prefs.putInt("lsleep", c.lcd_sleep);
+    prefs.putInt("lpanel", c.lcd_panel);
     prefs.putBool("lland", c.lcd_land);
     prefs.putBool("lflip", c.lcd_flip);
 }
@@ -141,13 +145,13 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
              "\"sweep_ms\":%u,\"error\":\"%s\",\"cal\":%d,\"bands\":%u,\"noise\":%s,"
              "\"markers\":[%d,%d,%d,%d],\"hold\":%u,\"avg\":%u,\"ytop\":%d,\"yrange\":%d,"
              "\"tune_ms\":%u,\"measure_ms\":%u,\"bat\":%d,\"bat_low\":%d,"
-             "\"lcd\":%d,\"lbright\":%d,\"lsleep\":%d,\"lflip\":%d}",
+             "\"lcd\":%d,\"lbright\":%d,\"lsleep\":%d,\"lflip\":%d,\"warn\":%d}",
              linked ? "true" : "false", info, c.start_mhz, c.stop_mhz, c.rate_code, c.dwell_ms,
              c.max_hold ? 1 : 0, c.gain, gain_max, steps, (unsigned)(2 * half_use_khz(c.rate_code)), sweep_ms,
              receiver_error, config.cal_tenths, config.bands, has_noise ? "true" : "false", config.markers[0],
              config.markers[1], config.markers[2], config.markers[3], config.hold, config.avg, config.ytop,
              config.yrange, (unsigned)sweep_tune_ms, (unsigned)sweep_measure_ms, battery_percent, BATTERY_LOW_PERCENT,
-             FPV_LCD ? 1 : 0, config.lcd_bright, config.lcd_sleep, config.lcd_flip ? 1 : 0);
+             FPV_LCD ? 1 : 0, config.lcd_bright, config.lcd_sleep, config.lcd_flip ? 1 : 0, config.warn_dbfs);
     status_dirty = true;
     xSemaphoreGive(lock);
 }
@@ -343,6 +347,7 @@ static void handle_text(const char *text) {
         else if (!strcmp(key, "det")) c.max_hold = value != 0;
         else if (!strcmp(key, "gain")) c.gain = constrain(value, -1, 90);
         else if (!strcmp(key, "cal")) c.cal_tenths = constrain(value, -1000, 1000);
+        else if (!strcmp(key, "warn")) c.warn_dbfs = constrain(value, -60, 0);
         else if (!strcmp(key, "bands")) c.bands = value & 0x1f;
         else if (key[0] == 'm' && key[1] >= '1' && key[1] <= '4' && !key[2])
             c.markers[key[1] - '1'] = value < 0 ? -1 : constrain(value, 23000, 60000);
@@ -352,6 +357,7 @@ static void handle_text(const char *text) {
         else if (!strcmp(key, "yrange")) c.yrange = constrain(value, 10, 150);
         else if (!strcmp(key, "lbright")) c.lcd_bright = constrain(value, 10, 100);
         else if (!strcmp(key, "lsleep")) c.lcd_sleep = constrain(value, 0, 600);
+        else if (!strcmp(key, "lpanel")) c.lcd_panel = constrain(value, 0, 30);
         else if (!strcmp(key, "lland")) c.lcd_land = value != 0;
         else if (!strcmp(key, "lflip")) c.lcd_flip = value != 0;
     }
