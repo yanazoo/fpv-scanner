@@ -32,6 +32,7 @@ static const size_t FRAME_SIZE = FRAME_HEADER + SWEEP_POINTS;
 struct SweepStatus {
     bool linked;
     unsigned steps, sweep_ms, tune_ms, measure_ms;
+    unsigned gain_max; /* highest manual gain the C5 accepts, 0 = not known yet */
     char error[64];
 };
 

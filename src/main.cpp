@@ -491,6 +491,7 @@ SweepStatus shared_status() {
     s.sweep_ms = last.sweep_ms;
     s.tune_ms = sweep_tune_ms;
     s.measure_ms = sweep_measure_ms;
+    s.gain_max = gain_max;
     strlcpy(s.error, receiver_error, sizeof(s.error));
     xSemaphoreGive(lock);
     return s;
