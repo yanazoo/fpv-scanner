@@ -185,8 +185,8 @@ void take_frame() {
     }
     reset_traces = false;
     have = true;
-    /* Wide signals near -30 dBFS per bin already add up to ADC full scale. */
-    warn = top / 2.0f - 84.3f > -30;
+    /* Saturation hint: the strongest point above the set dBFS (warn_dbfs). */
+    warn = top / 2.0f - 84.3f > cfg.warn_dbfs;
 }
 
 /* ---- main screen geometry ----
@@ -194,8 +194,8 @@ void take_frame() {
  * Landscape: graph almost the full width, the markers in one row of four
  * cells (level, whole MHz) below; the buttons are on a panel that slides in
  * from the right when the tab on the right edge (or, with no marker
- * selected, the graph) is tapped, and slides out after PANEL_MS without a
- * tap on it. */
+ * selected, the graph) is tapped, and slides back after lcd_panel seconds
+ * without a tap (0: never) or as soon as a button on it was pressed. */
 const int PX = 32, PY = 18;
 const int MAX_PW = 288;
 int PW, PH; /* graph width and height */
@@ -204,13 +204,13 @@ const int ROW = 20;          /* portrait table rows */
 const int LROW = 18;         /* landscape marker row */
 const int TAB_W = 16;        /* landscape: tab that opens the button panel */
 const int PANEL_W = 72;      /* landscape: button panel */
-const uint32_t PANEL_MS = 5000;
+
 bool panel_open;
 int panel_px;                /* how far the panel has slid in, 0 .. PANEL_W */
 uint32_t panel_until;
 void open_panel() {
     panel_open = true;
-    panel_until = millis() + PANEL_MS;
+    panel_until = millis() + (uint32_t)cfg.lcd_panel * 1000;
 }
 /* peak hold and average (toggles), peak hold reset, settings */
 Rect BTN_HOLD, BTN_AVG, BTN_RESET, BTN_SETTINGS;
@@ -563,9 +563,19 @@ void draw_receiver() {
     text_center(value_x(), row_text_y(4), s, WHITE);
     button(step_button(4, 2), "+.5");
     button(step_button(4, 3), "+5");
-    if (st.gain_max) snprintf(s, sizeof(s), "ゲイン: 自動 または 2〜%u", st.gain_max);
-    else strcpy(s, "ゲイン: 自動 または 2〜");
-    text(0, row_y(5) + (landscape ? 2 : 6), s, GRAY);
+    /* "ゲイン下げて" shows when the strongest point exceeds this (dBFS) */
+    text(0, row_text_y(5), "警告", WHITE);
+    button(step_button(5, 0), "-5");
+    button(step_button(5, 1), "-1");
+    snprintf(s, sizeof(s), "%d", cfg.warn_dbfs);
+    text_center(value_x(), row_text_y(5), s, WHITE);
+    button(step_button(5, 2), "+1");
+    button(step_button(5, 3), "+5");
+    if (!landscape) { /* no room for the notes in landscape */
+        if (st.gain_max) snprintf(s, sizeof(s), "ゲイン: 自動 または 2〜%u", st.gain_max);
+        else strcpy(s, "ゲイン: 自動 または 2〜");
+        text(0, row_y(6) - 4, s, GRAY);
+    }
 }
 
 /* ---- advanced settings screen: brightness and power saving ---- */
@@ -591,12 +601,16 @@ void draw_advanced() {
     button(plus_button(1), "+10秒");
     button(minus_button(2), "-1分");
     button(plus_button(2), "+1分");
-    int y = row_y(3);
-    text(0, y, "省電力: 操作しない時間が", GRAY);
-    text(0, y + 18, "設定時間たつと暗くなり、", GRAY);
-    text(0, y + 36, "同じ時間でさらに消灯。", GRAY);
-    text(0, y + 54, "画面のタップで明るさが戻る", GRAY);
-    text(0, y + 72, "（そのタップは操作しない）", GRAY);
+    /* landscape button panel: seconds until it slides back by itself */
+    text(0, row_text_y(3), "ボタン", WHITE);
+    button(minus_button(3), "-1秒");
+    if (cfg.lcd_panel > 0) snprintf(s, sizeof(s), "%d秒", cfg.lcd_panel);
+    else strcpy(s, "押すまで");
+    text_center(pm_value_x(), row_text_y(3), s, WHITE);
+    button(plus_button(3), "+1秒");
+    static const char *const NOTES[] = {"省電力: 無操作で暗く→消灯", "タップで明るさが戻る",
+                                        "ボタン: 横画面の右のボタン", "が自動で戻るまでの秒数"};
+    for (int i = 0, y = row_y(4); i < 4 && y + 16 <= scr_h; i++, y += 16) text(0, y, NOTES[i], GRAY);
 }
 
 /* ---- touch ---- */
@@ -634,9 +648,9 @@ void press_main(int x, int y) {
         return;
     } else if (landscape) {
         if (on_panel(x) && y < TY - 2) {
-            /* panel buttons: four rows, gaps included; each tap keeps the
-             * panel out for another PANEL_MS */
-            open_panel();
+            /* panel buttons: four rows, gaps included; the panel slides
+             * back once a button was pressed */
+            panel_open = false;
             switch (constrain((y - PY) * 4 / PH, 0, 3)) {
             case 0: apply("cfg hold=%d", !cfg.hold); break;
             case 1: apply("cfg avg=%d", !cfg.avg); break;
@@ -646,7 +660,8 @@ void press_main(int x, int y) {
                 screen = SETTINGS;
             }
         } else if (x >= scr_w - TAB_W - 4 && y < TY - 2) {
-            open_panel();
+            if (panel_open) panel_open = false; /* the tab closes it again */
+            else open_panel();
         } else if (y >= TY - 2) {
             /* marker cells: tapping the selected one again releases it */
             int m = min(x * 4 / scr_w, 3);
@@ -678,6 +693,8 @@ void press_advanced(int x, int y) {
     else if (plus_button(1).in(x, y)) apply("cfg lsleep=%d", min(cfg.lcd_sleep + 10, 600));
     else if (minus_button(2).in(x, y)) apply("cfg lsleep=%d", max(cfg.lcd_sleep - 60, 0));
     else if (plus_button(2).in(x, y)) apply("cfg lsleep=%d", min(cfg.lcd_sleep + 60, 600));
+    else if (minus_button(3).in(x, y)) apply("cfg lpanel=%d", max(cfg.lcd_panel - 1, 0));
+    else if (plus_button(3).in(x, y)) apply("cfg lpanel=%d", min(cfg.lcd_panel + 1, 30));
 }
 
 /* Gain steps: -1 is the hardware AGC, manual gains are 2 .. gain_max, so
@@ -691,7 +708,8 @@ int step_gain(int gain, int delta) {
 }
 
 void press_receiver(int x, int y) {
-    static const int GAIN[] = {-10, -1, 1, 10}, DWELL[] = {-50, -5, 5, 50}, CAL[] = {-50, -5, 5, 50};
+    static const int GAIN[] = {-10, -1, 1, 10}, DWELL[] = {-50, -5, 5, 50}, CAL[] = {-50, -5, 5, 50},
+                     WARN[] = {-5, -1, 1, 5};
     if (BTN_BACK.in(x, y)) {
         screen = SETTINGS;
         return;
@@ -701,6 +719,7 @@ void press_receiver(int x, int y) {
         else if (step_button(1, i).in(x, y)) apply("cfg gain=%d", step_gain(cfg.gain, GAIN[i]));
         else if (step_button(2, i).in(x, y)) apply("cfg dwell=%d", constrain((int)cfg.dwell_ms + DWELL[i], 5, 500));
         else if (step_button(4, i).in(x, y)) apply("cfg cal=%d", constrain(cfg.cal_tenths + CAL[i], -1000, 1000));
+        else if (step_button(5, i).in(x, y)) apply("cfg warn=%d", constrain(cfg.warn_dbfs + WARN[i], -60, 0));
     }
     if (pair_button(3, 0).in(x, y)) apply("cfg det=%d", 1);
     else if (pair_button(3, 1).in(x, y)) apply("cfg det=%d", 0);
@@ -1076,10 +1095,10 @@ void lcd_task(void *) {
                 continue;
             }
         }
-        /* landscape button panel: hide after PANEL_MS, slide in or out */
+        /* landscape button panel: hide after lcd_panel seconds, slide in or out */
         bool sliding = false;
         if (landscape && screen == MAIN) {
-            if (panel_open && (int32_t)(panel_until - now) <= 0) panel_open = false;
+            if (panel_open && cfg.lcd_panel > 0 && (int32_t)(panel_until - now) <= 0) panel_open = false;
             int target = panel_open ? PANEL_W : 0;
             if (panel_px != target) {
                 panel_px += constrain(target - panel_px, -24, 24);
