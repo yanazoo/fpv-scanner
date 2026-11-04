@@ -34,9 +34,9 @@ bool lcd_board_refresh(unsigned backlight_percent);
 /* Sends rows y .. y + rows - 1 of the given width (the full screen width),
  * RGB565 in native byte order. */
 void lcd_push_rows(int y, int rows, int width, const uint16_t *pixels);
-/* Landscape (LCD_H x LCD_W; flip turns it by 180 degrees) or portrait
- * (LCD_W x LCD_H) addressing; lcd_touch() keeps reporting portrait
- * coordinates. */
+/* Landscape (LCD_H x LCD_W) or portrait (LCD_W x LCD_H) addressing; flip
+ * turns either by 180 degrees (the 1.47" board: landscape only).
+ * lcd_touch() keeps reporting unturned portrait coordinates. */
 void lcd_set_landscape(bool on, bool flip);
 /* First touch point in screen coordinates; false when not touched. */
 bool lcd_touch(int *x, int *y);
