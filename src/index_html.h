@@ -146,8 +146,12 @@ $('applyw').onclick=()=>{const m=$('wmode').value,ssid=$('wssid').value.trim(),p
  const keep=!pw&&ssid===(cfg.wssid??'')?1:0,hkeep=hp?0:1;
  const hostNow=(cfg.wstate??0)===0,hostChange=hs!==cfg.ap||!!hp,change=m!==String(cfg.wmode)||ssid!==cfg.wssid||pw||(hostNow&&hostChange);
  if(change&&!confirm('Wi-Fiを切り替えます。この画面の接続はいったん切れます。'+(hostNow&&hostChange?'\n新しいホストのSSID・パスワードでつなぎ直してください。':'')))return;
- if(send(['wifi',m,$('wwait').value,ssid,pw,keep,hs,hp,hkeep].join('\n'))){$('applyw').classList.remove('dirty');$('wpass').value='';$('hpass').value=''}};
-$('wshow').onchange=()=>{const t=$('wshow').checked?'text':'password';$('wpass').type=t;$('hpass').type=t};
+ if(send(['wifi',m,$('wwait').value,ssid,pw,keep,hs,hp,hkeep].join('\n'))){$('applyw').classList.remove('dirty');$('wpass').value='';$('hpass').value='';$('wshow').checked=false;$('wpass').type=$('hpass').type='password'}};
+// Showing the passwords asks the device for the saved ones (sent to this page only).
+let shownPass={};
+$('wshow').onchange=()=>{const on=$('wshow').checked,t=on?'text':'password';$('wpass').type=t;$('hpass').type=t;
+ if(on)send('wifi pass');else for(const k of['hpass','wpass'])if($(k).value===shownPass[k])$(k).value=''};
+function showPass(j){if(!$('wshow').checked)return;shownPass=j;for(const k of['hpass','wpass'])if(!$(k).value)$(k).value=j[k]}
 // Saved settings (what the next start uses) and the current state, always shown.
 function wifiState(s){const st=s.wstate??0,cl=+s.wmode===1;
  $('wsaved').innerHTML='';[`保存中の設定: モード ${cl?'クライアント（つながらないとき '+s.wwait+'秒でホスト）':'ホスト'}`,
@@ -208,7 +212,7 @@ function onFrame(buf){const v=new DataView(buf),magic=v.getUint32(0,true),a=v.ge
  // Saturation hint: the strongest point above the set dBFS (cfg.warn).
  const w=Math.max(...t)/2-84.3>(cfg.warn??-15)?'ゲイン下げて':'';if(w!==warn){warn=w;showErr()}redraw()}
 function connect(){ws=new WebSocket('ws://'+location.hostname+':81/');ws.binaryType='arraybuffer';lastMsg=Date.now();
- ws.onmessage=e=>{lastMsg=Date.now();typeof e.data==='string'?onStatus(JSON.parse(e.data)):onFrame(e.data)};
+ ws.onmessage=e=>{lastMsg=Date.now();if(typeof e.data!=='string')return onFrame(e.data);const j=JSON.parse(e.data);j.type==='wifipass'?showPass(j):onStatus(j)};
  ws.onclose=()=>{$('st').textContent='再接続中';$('st').className='ng';setTimeout(connect,1000)}}
 setInterval(()=>{if(ws&&ws.readyState===1&&Date.now()-lastMsg>5000)ws.close()},1000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&ws&&Date.now()-lastMsg>5000)ws.close()});

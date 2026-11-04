@@ -1024,7 +1024,12 @@ void lcd_task(void *) {
     uint32_t last_draw = millis(), last_battery = last_draw, last_refresh = last_draw, last_log = 0;
     bool dirty = true;
     bool waking = false; /* the touch that woke the screen does nothing else */
+    uint32_t last_pass = millis();
     for (;;) {
+        /* diagnostics: the screen did not get its turn for a while */
+        uint32_t pass = millis();
+        if (pass - last_pass > 500) Serial.printf("[%lu ms] SLOW: LCD waited %lu ms\n", pass, pass - last_pass);
+        last_pass = pass;
         poll_touch();
         if (touch.pressed) {
             touch.pressed = false;

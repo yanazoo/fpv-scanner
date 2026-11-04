@@ -521,6 +521,18 @@ static void handle_wifi(const char *text) {
     refresh_status();
 }
 
+/* The saved passwords, sent only to the page that asked ("パスワードを表示"),
+ * never in the status every page gets. */
+static void send_passwords(uint8_t client) {
+    char host[sizeof(wifi.ap_pass) * 6], join[sizeof(wifi.pass) * 6], out[sizeof(host) + sizeof(join) + 48];
+    xSemaphoreTake(lock, portMAX_DELAY);
+    json_escape(wifi.ap_pass, host, sizeof(host));
+    json_escape(wifi.pass, join, sizeof(join));
+    xSemaphoreGive(lock);
+    snprintf(out, sizeof(out), "{\"type\":\"wifipass\",\"hpass\":\"%s\",\"wpass\":\"%s\"}", host, join);
+    ws.sendTXT(client, out);
+}
+
 /* Noise reference requests from the LCD, carried out by the web task
  * because they broadcast to the pages. */
 static uint8_t noise_request[FRAME_SIZE];
@@ -549,6 +561,8 @@ static void on_ws(uint8_t client, WStype_t type, uint8_t *payload, size_t length
             clear_noise();
         else if (!strncmp(text, "wifi\n", 5))
             handle_wifi(text);
+        else if (!strcmp(text, "wifi pass"))
+            send_passwords(client);
         else
             handle_text(text);
     } else if (type == WStype_BIN) {
@@ -590,7 +604,9 @@ static void ws_task(void *) {
     static char status_out[sizeof(status_text)];
     uint32_t last_send = 0;
     for (;;) {
+        uint32_t t0 = millis();
         ws.loop();
+        if (millis() - t0 > 300) Serial.printf("[%lu ms] SLOW: page server %lu ms\n", millis(), millis() - t0);
         /* Status at least every 2 s, so pages can tell a long sweep from a
          * dead connection (they reconnect after 5 s of silence). */
         if (millis() - last_send > 2000) {
@@ -617,11 +633,13 @@ static void ws_task(void *) {
         if (save) save_settings();
         if (clear) clear_noise();
         if (store) store_noise(noise_request, sizeof(noise_request));
+        t0 = millis();
         if (send_frame) send_all(true, out, sizeof(out));
         if (send_status) {
             send_all(false, status_out, strlen(status_out));
             last_send = millis();
         }
+        if (millis() - t0 > 300) Serial.printf("[%lu ms] SLOW: sending to pages %lu ms\n", millis(), millis() - t0);
         vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
@@ -813,7 +831,11 @@ void setup() {
 }
 
 void loop() {
+    uint32_t t0 = millis();
     poll_wifi();
+    uint32_t t1 = millis();
     portal_http_poll();
+    uint32_t t2 = millis();
+    if (t2 - t0 > 300) Serial.printf("[%lu ms] SLOW: wifi %lu ms, http %lu ms\n", t2, t1 - t0, t2 - t1);
     delay(2);
 }
