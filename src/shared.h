@@ -7,23 +7,23 @@
 struct SweepConfig {
     unsigned start_mhz = DEFAULT_START_MHZ, stop_mhz = DEFAULT_STOP_MHZ;
     unsigned rate_code = 0; /* step plan, see steps[]: 0: 40, 1: 30, 2: 15, 3: 7.5 MHz */
-    unsigned dwell_ms = 25;
+    unsigned dwell_ms = 5;
     bool max_hold = true;
-    int gain = 10; /* -1: hardware AGC, otherwise a PHY gain index */
+    int gain = 40; /* -1: hardware AGC, otherwise a PHY gain index */
     /* Display only; changing them does not restart the sweep. */
     int cal_tenths = 0;      /* dBm = dBFS + cal_tenths / 10 */
-    int warn_dbfs = -15;     /* "ゲイン下げて" when a point exceeds this (dBFS) */
-    unsigned bands = 0x11;   /* FPV band lines shown: bit 0 A, 1 B, 2 E, 3 F, 4 R */
-    int markers[4] = {-1, -1, -1, -1}; /* tenths of MHz, -1 = unset */
-    bool hold = false, avg = false;    /* peak-hold / averaged trace */
-    int ytop = -17, yrange = 75;       /* graph top (dBm) and height (dB) */
+    int warn_dbfs = -5;      /* "ゲイン下げて" when a point exceeds this (dBFS) */
+    unsigned bands = 0x10;   /* FPV band lines shown: bit 0 A, 1 B, 2 E, 3 F, 4 R */
+    int markers[4] = {56950, 57320, 57690, 58060}; /* tenths of MHz (R2..R5), -1 = unset */
+    bool hold = true, avg = true;      /* peak-hold / averaged trace */
+    int ytop = 0, yrange = 85;         /* graph top (dBm) and height (dB) */
     /* LCD build: backlight (%) and seconds without a touch until the screen
      * dims (it goes dark after as long again); 0 = never. */
     int lcd_bright = 100, lcd_sleep = 0;
     /* landscape button panel: seconds it stays out without a tap, 0 = until
      * a button (or the tab) is tapped */
     int lcd_panel = 5;
-    bool lcd_land = false; /* main screen in landscape (settings stay portrait) */
+    bool lcd_land = true;  /* screens in landscape */
     bool lcd_flip = false; /* landscape turned by 180 degrees */
 };
 

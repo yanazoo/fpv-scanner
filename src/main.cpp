@@ -851,6 +851,13 @@ void setup() {
     lock = xSemaphoreCreateMutex();
     load_settings();
     last.c = config;
+    /* The network stack (lwIP) must run even with Wi-Fi switched off: the
+     * DNS, page and WebSocket servers below use it, and with Wi-Fi off at
+     * start nothing else would start it (the board then crashed and
+     * restarted over and over). */
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    Network.begin();
+#endif
     WiFi.onEvent(on_wifi_event);
     /* The screen comes first; Wi-Fi start-up (and the band setting) takes a
      * moment and never holds it back. */
