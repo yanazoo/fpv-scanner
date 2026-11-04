@@ -4,6 +4,7 @@
 static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="format-detection" content="telephone=no">
 <title>5.8GHz FPV Scanner</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#0d1117;color:#e6edf3;font:14px system-ui,sans-serif}
