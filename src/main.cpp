@@ -104,6 +104,7 @@ static struct {
     bool lost;          /* client: connection lost since `since` */
     uint32_t since;     /* client: connecting / lost since */
     char ip[16] = "";
+    volatile unsigned reason; /* client: why the last attempt failed (Wi-Fi reason code), 0 = none */
 } wifi;
 
 /* Noise reference saved from the page: same layout as a sweep frame. */
@@ -216,7 +217,7 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
              "\"tune_ms\":%u,\"measure_ms\":%u,\"bat\":%d,\"bat_low\":%d,"
              "\"lcd\":%d,\"lbright\":%d,\"lsleep\":%d,\"lflip\":%d,\"warn\":%d,"
              "\"wmode\":%d,\"wwait\":%d,\"wssid\":\"%s\",\"wpass\":%d,\"wstate\":%d,\"wfb\":%d,"
-             "\"wip\":\"%s\",\"ap\":\"%s\",\"mdns\":\"%s\"}",
+             "\"wip\":\"%s\",\"ap\":\"%s\",\"mdns\":\"%s\",\"wreason\":%u}",
              linked ? "true" : "false", info, c.start_mhz, c.stop_mhz, c.rate_code, c.dwell_ms,
              c.max_hold ? 1 : 0, c.gain, gain_max, steps, (unsigned)(2 * half_use_khz(c.rate_code)), sweep_ms,
              receiver_error, config.cal_tenths, config.bands, has_noise ? "true" : "false", config.markers[0],
@@ -224,7 +225,7 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
              config.yrange, (unsigned)sweep_tune_ms, (unsigned)sweep_measure_ms, battery_percent, BATTERY_LOW_PERCENT,
              FPV_LCD ? 1 : 0, config.lcd_bright, config.lcd_sleep, config.lcd_flip ? 1 : 0, config.warn_dbfs,
              wifi.mode, wifi.wait, ssid, wifi.pass[0] ? 1 : 0, (int)wifi.state, wifi.fallback ? 1 : 0, wifi.ip,
-             ap_ssid, MDNS_NAME);
+             ap_ssid, MDNS_NAME, wifi.reason);
     status_dirty = true;
     xSemaphoreGive(lock);
 }
@@ -757,6 +758,7 @@ static void start_client() {
     radio_2g_only();
     WiFi.setSleep(false);
     WiFi.setAutoReconnect(true);
+    wifi.reason = 0;
     WiFi.begin(wifi.ssid, wifi.pass[0] ? wifi.pass : nullptr);
     wifi.since = millis();
     wifi.lost = false;
@@ -784,8 +786,8 @@ static void on_wifi_event(arduino_event_id_t event, arduino_event_info_t info) {
         break;
     }
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-        Serial.printf("[%lu ms] Wi-Fi client: disconnected (reason %u)\n", millis(),
-                      info.wifi_sta_disconnected.reason);
+        wifi.reason = info.wifi_sta_disconnected.reason;
+        Serial.printf("[%lu ms] Wi-Fi client: disconnected (reason %u)\n", millis(), wifi.reason);
         break;
     default:
         break;
