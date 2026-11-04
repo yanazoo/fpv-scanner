@@ -577,9 +577,9 @@ void draw_advanced() {
     draw_title("詳細設定", 1);
     /* orientation, and turned by 180 degrees (either orientation) */
     label(0, "画面の向き");
-    button(col(0, 0), "縦", !cfg.lcd_land);
-    button(col(0, 1), "横", cfg.lcd_land);
-    button(col(0, 2), "反転", cfg.lcd_flip);
+    button(cell(0, 0, 1, 3), "縦", !cfg.lcd_land); /* three equal buttons, same edges as the rows */
+    button(cell(0, 1, 2, 3), "横", cfg.lcd_land);
+    button(cell(0, 2, 3, 3), "反転", cfg.lcd_flip);
     /* "ゲイン下げて" shows when the strongest point exceeds this (dBFS) */
     snprintf(s, sizeof(s), "%ddBFS", cfg.warn_dbfs);
     label(1, "警告", s);
@@ -764,9 +764,9 @@ void press_main(int x, int y) {
 void press_advanced(int x, int y) {
     static const int WARN[] = {-5, -1, 1, 5}, SLEEP[] = {-60, -10, 10, 60};
     if (BTN_BACK.in(x, y)) screen = SETTINGS;
-    else if (col(0, 0).in(x, y)) apply("cfg lland=%d", 0);
-    else if (col(0, 1).in(x, y)) apply("cfg lland=%d", 1);
-    else if (col(0, 2).in(x, y)) apply("cfg lflip=%d", !cfg.lcd_flip);
+    else if (cell(0, 0, 1, 3).in(x, y)) apply("cfg lland=%d", 0);
+    else if (cell(0, 1, 2, 3).in(x, y)) apply("cfg lland=%d", 1);
+    else if (cell(0, 2, 3, 3).in(x, y)) apply("cfg lflip=%d", !cfg.lcd_flip);
     else if (half(2, 0).in(x, y)) apply("cfg lbright=%d", max(cfg.lcd_bright - 10, 10));
     else if (half(2, 1).in(x, y)) apply("cfg lbright=%d", min(cfg.lcd_bright + 10, 100));
     else if (half(4, 0).in(x, y)) apply("cfg lpanel=%d", max(cfg.lcd_panel - 1, 0));
