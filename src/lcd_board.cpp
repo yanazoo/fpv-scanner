@@ -161,7 +161,7 @@ bool lcd_touch_begin() {
 
 void lcd_set_landscape(bool on, bool flip) {
     /* MADCTL: MV swaps rows and columns, MX / MY mirror them */
-    lcd_command(0x36, {(uint8_t)(!on ? 0x00 : flip ? 0xA0 : 0x60)});
+    lcd_command(0x36, {(uint8_t)(!on ? (flip ? 0xC0 : 0x00) : flip ? 0xA0 : 0x60)});
 }
 
 bool lcd_user_button() { return false; }
