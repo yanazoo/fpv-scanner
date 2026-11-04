@@ -96,7 +96,8 @@ enum WifiState { WIFI_HOST, WIFI_CONNECTING, WIFI_CLIENT };
 static struct {
     int mode = 0;  /* 0: host, 1: client first */
     int wait = 30; /* seconds: 15, 30 or 60 */
-    char ssid[33] = "", pass[65] = "";
+    char ssid[33] = "", pass[65] = "";               /* client: the network joined */
+    char ap_ssid[33] = AP_SSID, ap_pass[65] = AP_PASSWORD; /* host: the own access point */
     WifiState state = WIFI_HOST;
     bool fallback;      /* host because the client connection failed */
     bool restart;       /* apply the settings (set by the web task) */
@@ -136,6 +137,9 @@ static void load_settings() {
     wifi.wait = prefs.getInt("wwait", wifi.wait);
     prefs.getString("wssid", wifi.ssid, sizeof(wifi.ssid));
     prefs.getString("wpass", wifi.pass, sizeof(wifi.pass));
+    /* the host's name and password from the page; config.h has the defaults */
+    if (prefs.isKey("hssid")) prefs.getString("hssid", wifi.ap_ssid, sizeof(wifi.ap_ssid));
+    if (prefs.isKey("hpass")) prefs.getString("hpass", wifi.ap_pass, sizeof(wifi.ap_pass));
     /* NSE2: references saved by earlier builds did not track the receiver
      * settings they were taken with, so they are discarded once. */
     has_noise = prefs.getBytes("noise", noise, sizeof(noise)) == sizeof(noise) && !memcmp(noise, "NSE2", 4);
@@ -201,8 +205,9 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
     last.c = c;
     last.steps = steps;
     last.sweep_ms = sweep_ms;
-    char ssid[sizeof(wifi.ssid) * 6];
+    char ssid[sizeof(wifi.ssid) * 6], ap_ssid[sizeof(wifi.ap_ssid) * 6];
     json_escape(wifi.ssid, ssid, sizeof(ssid));
+    json_escape(wifi.ap_ssid, ap_ssid, sizeof(ap_ssid));
     snprintf(status_text, sizeof(status_text),
              "{\"type\":\"status\",\"linked\":%s,\"info\":\"%s\",\"start\":%u,\"stop\":%u,\"rate\":%u,"
              "\"dwell\":%u,\"det\":%u,\"gain\":%d,\"gain_max\":%u,\"steps\":%u,\"step_khz\":%u,"
@@ -219,7 +224,7 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
              config.yrange, (unsigned)sweep_tune_ms, (unsigned)sweep_measure_ms, battery_percent, BATTERY_LOW_PERCENT,
              FPV_LCD ? 1 : 0, config.lcd_bright, config.lcd_sleep, config.lcd_flip ? 1 : 0, config.warn_dbfs,
              wifi.mode, wifi.wait, ssid, wifi.pass[0] ? 1 : 0, (int)wifi.state, wifi.fallback ? 1 : 0, wifi.ip,
-             AP_SSID, MDNS_NAME);
+             ap_ssid, MDNS_NAME);
     status_dirty = true;
     xSemaphoreGive(lock);
 }
@@ -469,42 +474,50 @@ static void clear_noise() {
     refresh_status();
 }
 
-/* "wifi\n<mode>\n<wait>\n<ssid>\n<password>\n<keep>" from the page (lines,
- * since names may contain spaces); keep=1 keeps the saved password. The
- * settings are saved and applied at once. */
+/* "wifi\n<mode>\n<wait>\n<ssid>\n<password>\n<keep>\n<host ssid>\n<host
+ * password>\n<host keep>" from the page (lines, since names may contain
+ * spaces); keep=1 keeps the saved password. The settings are saved and
+ * applied at once (a changed host only matters while hosting). */
 static void handle_wifi(const char *text) {
-    char field[6][65] = {};
+    const int FIELDS = 9;
+    char field[FIELDS][65] = {};
     int n = 0;
-    for (const char *p = text; n < 6; n++) {
+    for (const char *p = text; n < FIELDS;) {
         const char *e = strchr(p, '\n');
         size_t len = e ? (size_t)(e - p) : strlen(p);
         if (len >= sizeof(field[0])) return;
-        memcpy(field[n], p, len);
-        if (!e) {
-            n++;
-            break;
-        }
+        memcpy(field[n++], p, len);
+        if (!e) break;
         p = e + 1;
     }
-    if (n != 6 || strcmp(field[0], "wifi")) return;
+    if (n != FIELDS || strcmp(field[0], "wifi")) return;
     int mode = atoi(field[1]) ? 1 : 0, wait = atoi(field[2]);
-    bool keep = atoi(field[5]) != 0;
-    size_t pass_len = strlen(field[4]);
-    if ((wait != 15 && wait != 30 && wait != 60) || strlen(field[3]) > 32 || (pass_len && pass_len < 8)) return;
+    bool keep = atoi(field[5]) != 0, ap_keep = atoi(field[8]) != 0;
+    size_t pass_len = strlen(field[4]), ap_ssid_len = strlen(field[6]), ap_pass_len = strlen(field[7]);
+    /* WPA2 passwords have 8 to 63 characters; the host always has one */
+    if ((wait != 15 && wait != 30 && wait != 60) || strlen(field[3]) > 32 || (pass_len && pass_len < 8) ||
+        !ap_ssid_len || ap_ssid_len > 32 || (ap_keep ? ap_pass_len != 0 : ap_pass_len < 8))
+        return;
     xSemaphoreTake(lock, portMAX_DELAY);
-    const char *pass = keep ? wifi.pass : field[4];
+    const char *pass = keep ? wifi.pass : field[4], *ap_pass = ap_keep ? wifi.ap_pass : field[7];
+    bool host_changed = strcmp(field[6], wifi.ap_ssid) || strcmp(ap_pass, wifi.ap_pass);
     bool restart = mode != wifi.mode || strcmp(field[3], wifi.ssid) || strcmp(pass, wifi.pass) ||
-                   (wifi.fallback && mode == 1); /* try the network again */
+                   (wifi.fallback && mode == 1) || /* try the network again */
+                   (host_changed && wifi.state == WIFI_HOST);
     wifi.mode = mode;
     wifi.wait = wait;
     strlcpy(wifi.ssid, field[3], sizeof(wifi.ssid));
     if (!keep) strlcpy(wifi.pass, field[4], sizeof(wifi.pass));
+    strlcpy(wifi.ap_ssid, field[6], sizeof(wifi.ap_ssid));
+    if (!ap_keep) strlcpy(wifi.ap_pass, field[7], sizeof(wifi.ap_pass));
     if (restart) wifi.restart = true;
     xSemaphoreGive(lock);
     prefs.putInt("wmode", wifi.mode);
     prefs.putInt("wwait", wifi.wait);
     prefs.putString("wssid", wifi.ssid);
     prefs.putString("wpass", wifi.pass);
+    prefs.putString("hssid", wifi.ap_ssid);
+    prefs.putString("hpass", wifi.ap_pass);
     refresh_status();
 }
 
@@ -528,7 +541,7 @@ static void on_ws(uint8_t client, WStype_t type, uint8_t *payload, size_t length
         if (has_noise) ws.sendBIN(client, noise, sizeof(noise));
         if (any) ws.sendBIN(client, latest, sizeof(latest));
     } else if (type == WStype_TEXT) {
-        char text[200];
+        char text[300];
         size_t n = length < sizeof(text) - 1 ? length : sizeof(text) - 1;
         memcpy(text, payload, n);
         text[n] = '\0';
@@ -708,10 +721,10 @@ static void start_host(bool fallback) {
     MDNS.end();
     WiFi.mode(WIFI_AP);
     radio_2g_only();
-    WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, 0, AP_MAX_CLIENTS);
+    WiFi.softAP(wifi.ap_ssid, wifi.ap_pass, AP_CHANNEL, 0, AP_MAX_CLIENTS);
     WiFi.setSleep(false);
     set_wifi_state(WIFI_HOST, fallback, WiFi.softAPIP().toString().c_str());
-    Serial.printf("[%lu ms] Wi-Fi host%s: %s  http://%s/\n", millis(), fallback ? " (client failed)" : "", AP_SSID,
+    Serial.printf("[%lu ms] Wi-Fi host%s: %s  http://%s/\n", millis(), fallback ? " (client failed)" : "", wifi.ap_ssid,
                   wifi.ip);
 }
 

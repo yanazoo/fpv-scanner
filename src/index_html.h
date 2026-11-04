@@ -69,11 +69,16 @@ td.ch{cursor:pointer}#mt td:first-child,#mt th:first-child{width:1%;white-space:
 <div class="box"><div class="row">
  Wi-Fi <label><select id="wmode"><option value="0">ホスト</option><option value="1">クライアント</option></select></label>
  <label>待ち時間 <select id="wwait"><option value="15">15秒</option><option value="30">30秒</option><option value="60">60秒</option></select></label>
- <label>接続先 <input id="wssid" maxlength="32" placeholder="SSID" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
- <label>パスワード <input type="password" id="wpass" maxlength="63" placeholder="変更しないときは空欄" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
- <label><input type="checkbox" id="wshow">パスワードを表示</label>
- <button id="applyw">適用</button>
 </div>
+<div class="row"><b style="min-width:7.5em">ホスト（本体のWi-Fi）</b>
+ <label>SSID <input id="hssid" maxlength="32" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+ <label>パスワード <input type="password" id="hpass" maxlength="63" placeholder="変更しないときは空欄" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+</div>
+<div class="row"><b style="min-width:7.5em">クライアント（接続先）</b>
+ <label>SSID <input id="wssid" maxlength="32" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+ <label>パスワード <input type="password" id="wpass" maxlength="63" placeholder="変更しないときは空欄" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+</div>
+<div class="row"><label><input type="checkbox" id="wshow">パスワードを表示</label><button id="applyw">適用</button></div>
 <div id="wsaved" style="font-size:13px;margin-top:4px"></div>
 <div id="wst" style="font-size:13px;margin-top:2px"></div></div>
 
@@ -131,24 +136,27 @@ $('applyl').onclick=()=>apply(`cfg lbright=${Math.round(+$('lbright').value)} ls
 $('applyr').onclick=()=>apply(`cfg rate=${$('rate').value} dwell=${$('dwell').value} det=${$('det').value} gain=${$('gain').value} cal=${Math.round(+$('cal').value*10)} warn=${Math.round(+$('warnd').value)}`,$('applyr'));
 // Wi-Fi: host = own access point; client = join the network, and when that fails for the
 // set time start the access point instead. Applied at once (this page reconnects).
-dirtyOn(['wmode','wwait','wssid','wpass'],'applyw');
-$('applyw').onclick=()=>{const m=$('wmode').value,ssid=$('wssid').value.trim(),pw=$('wpass').value;
- if(m==='1'&&!ssid){alert('接続先（SSID）を入力してください');return}
- if(pw&&(pw.length<8||pw.length>63)){alert('パスワードは8〜63文字です');return}
- if(/\n/.test(ssid+pw)){alert('改行は使えません');return}
- // An empty password keeps the saved one for the same network; a new network without one is open.
- const keep=!pw&&ssid===(cfg.wssid??'')?1:0;
- if((m!==String(cfg.wmode)||ssid!==cfg.wssid||pw)&&!confirm('Wi-Fiを切り替えます。この画面の接続はいったん切れます。'))return;
- if(send(['wifi',m,$('wwait').value,ssid,pw,keep].join('\n'))){$('applyw').classList.remove('dirty');$('wpass').value=''}};
-$('wshow').onchange=()=>$('wpass').type=$('wshow').checked?'text':'password';
+dirtyOn(['wmode','wwait','wssid','wpass','hssid','hpass'],'applyw');
+$('applyw').onclick=()=>{const m=$('wmode').value,ssid=$('wssid').value.trim(),pw=$('wpass').value,hs=$('hssid').value.trim(),hp=$('hpass').value;
+ if(!hs){alert('ホストのSSIDを入力してください');return}
+ if(m==='1'&&!ssid){alert('クライアントの接続先（SSID）を入力してください');return}
+ if(hp&&(hp.length<8||hp.length>63)||pw&&(pw.length<8||pw.length>63)){alert('パスワードは8〜63文字です');return}
+ if(/\n/.test(ssid+pw+hs+hp)){alert('改行は使えません');return}
+ // An empty password keeps the saved one (client: for the same network; a new network without one is open).
+ const keep=!pw&&ssid===(cfg.wssid??'')?1:0,hkeep=hp?0:1;
+ const hostNow=(cfg.wstate??0)===0,hostChange=hs!==cfg.ap||!!hp,change=m!==String(cfg.wmode)||ssid!==cfg.wssid||pw||(hostNow&&hostChange);
+ if(change&&!confirm('Wi-Fiを切り替えます。この画面の接続はいったん切れます。'+(hostNow&&hostChange?'\n新しいホストのSSID・パスワードでつなぎ直してください。':'')))return;
+ if(send(['wifi',m,$('wwait').value,ssid,pw,keep,hs,hp,hkeep].join('\n'))){$('applyw').classList.remove('dirty');$('wpass').value='';$('hpass').value=''}};
+$('wshow').onchange=()=>{const t=$('wshow').checked?'text':'password';$('wpass').type=t;$('hpass').type=t};
 // Saved settings (what the next start uses) and the current state, always shown.
 function wifiState(s){const st=s.wstate??0,cl=+s.wmode===1;
- $('wsaved').textContent='保存中の設定: '+(cl?`クライアント（接続先 ${s.wssid||'未設定'}、パスワード ${s.wpass?'保存済み':'なし'}、つながらないとき ${s.wwait}秒でホスト）`:
-  `ホスト（SSID ${s.ap}）`);
+ $('wsaved').innerHTML='';[`保存中の設定: モード ${cl?'クライアント（つながらないとき '+s.wwait+'秒でホスト）':'ホスト'}`,
+  `　ホスト: SSID ${s.ap}（パスワード保存済み）`,`　クライアント: 接続先 ${s.wssid||'未設定'}（パスワード ${s.wpass?'保存済み':'なし'}）`]
+  .forEach(t=>{const d=document.createElement('div');d.textContent=t;$('wsaved').appendChild(d)});
  $('wst').textContent='現在の状態: '+(st===1?`${s.wssid} に接続中…`:st===2?`クライアントで ${s.wssid} に接続中 → http://${s.wip}/ または http://${s.mdns}.local/`:
   `ホスト（SSID ${s.ap}） → http://${s.wip}/`+(s.wfb?' ※接続先につながらなかったためホストで起動中':''));
  $('wst').style.color=s.wfb?'#f2cc60':'#3fb950';
- if(!$('applyw').classList.contains('dirty')){$('wmode').value=s.wmode;$('wwait').value=s.wwait;$('wssid').value=s.wssid;
+ if(!$('applyw').classList.contains('dirty')){$('wmode').value=s.wmode;$('wwait').value=s.wwait;$('wssid').value=s.wssid;$('hssid').value=s.ap;
   $('wpass').placeholder=s.wpass?'変更しないときは空欄':'なし（オープン）'}}
 // Display settings take effect at once; the S3 saves them after typing pauses.
 let dispTimer,dispEdit=0;

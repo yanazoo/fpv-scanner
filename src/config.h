@@ -3,8 +3,10 @@
 #define FPV_LCD 0 /* 1: an LCD board (FPV_LCD147 for the 1.47 inch one) */
 #endif
 /* ---- Wi-Fi access point (2.4 GHz) -----------------------------------
- * These values are public (committed to the repository). WPA2 needs a
- * password of at least 8 characters. */
+ * Initial values of the host (access point) name and password; both can
+ * be changed on the web page (kept in flash). These values are public
+ * (committed to the repository). WPA2 needs a password of at least 8
+ * characters. */
 #define AP_SSID     "FPV-Scanner"
 #define AP_PASSWORD "fpv-scanner"
 #define AP_CHANNEL  1
