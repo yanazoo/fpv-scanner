@@ -1,6 +1,8 @@
 /* Front end (XIAO ESP32-S3, or with FPV_LCD the Waveshare ESP32-C5 touch
  * LCD board): 2.4 GHz access point + captive-portal web page showing a
- * 5 GHz sweep measured by an ESP-SDR XIAO ESP32-C5 over UART. The LCD
+ * 5 GHz sweep measured by an ESP-SDR XIAO ESP32-C5 over UART. Instead of
+ * its own access point it can join a router or a phone's hotspot (client
+ * mode), falling back to the access point when that fails. The LCD
  * build also draws the sweep on its own screen (lcd_ui.cpp).
  *
  * The C5 sees about 30 MHz at a time, so the sweep task retunes it in steps,
@@ -8,6 +10,7 @@
  * part of every spectrum into one trace of SWEEP_POINTS display points. */
 #include <Arduino.h>
 #include <DNSServer.h>
+#include <ESPmDNS.h>
 #include <Preferences.h>
 #include <WebSocketsServer.h>
 #include <WiFi.h>
@@ -52,12 +55,30 @@ static bool config_changed = true;
 static const size_t HEADER = FRAME_HEADER;
 static uint8_t frame[HEADER + SWEEP_POINTS];
 static uint32_t frame_seq, sent_seq;
-static char status_text[768];
+static char status_text[1024];
 static bool status_dirty = true;
 static unsigned gain_max;
 static char receiver_error[64];
 static bool settings_dirty;
 static int battery_percent = -1; /* LCD build only */
+
+/* ---- Wi-Fi: host (own access point) or client of a router / hotspot ----
+ * Client mode connects to the saved network at start; when that does not
+ * succeed within wait seconds, or a connection is lost for as long, the
+ * access point starts instead (until a restart or a new Wi-Fi setting).
+ * A changed setting applies at once. The password is never reported. */
+enum WifiState { WIFI_HOST, WIFI_CONNECTING, WIFI_CLIENT };
+static struct {
+    int mode = 0;  /* 0: host, 1: client first */
+    int wait = 30; /* seconds: 15, 30 or 60 */
+    char ssid[33] = "", pass[65] = "";
+    WifiState state = WIFI_HOST;
+    bool fallback;      /* host because the client connection failed */
+    bool restart;       /* apply the settings (set by the web task) */
+    bool lost;          /* client: connection lost since `since` */
+    uint32_t since;     /* client: connecting / lost since */
+    char ip[16] = "";
+} wifi;
 
 /* Noise reference saved from the page: same layout as a sweep frame. */
 static uint8_t noise[HEADER + SWEEP_POINTS];
@@ -86,6 +107,10 @@ static void load_settings() {
     c.lcd_panel = prefs.getInt("lpanel", c.lcd_panel);
     c.lcd_land = prefs.getBool("lland", c.lcd_land);
     c.lcd_flip = prefs.getBool("lflip", c.lcd_flip);
+    wifi.mode = prefs.getInt("wmode", wifi.mode);
+    wifi.wait = prefs.getInt("wwait", wifi.wait);
+    prefs.getString("wssid", wifi.ssid, sizeof(wifi.ssid));
+    prefs.getString("wpass", wifi.pass, sizeof(wifi.pass));
     /* NSE2: references saved by earlier builds did not track the receiver
      * settings they were taken with, so they are discarded once. */
     has_noise = prefs.getBytes("noise", noise, sizeof(noise)) == sizeof(noise) && !memcmp(noise, "NSE2", 4);
@@ -119,6 +144,18 @@ static void save_settings() {
     prefs.putBool("lflip", c.lcd_flip);
 }
 
+/* JSON string contents: quotes, backslashes and control characters escaped. */
+static void json_escape(const char *in, char *out, size_t size) {
+    size_t n = 0;
+    for (; *in && n + 7 < size; in++) {
+        unsigned char ch = *in;
+        if (ch == '"' || ch == '\\') out[n++] = '\\', out[n++] = ch;
+        else if (ch < 0x20) n += snprintf(out + n, size - n, "\\u%04x", ch);
+        else out[n++] = ch;
+    }
+    out[n] = '\0';
+}
+
 static void put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
 static void put16(uint8_t *p, uint16_t v) { memcpy(p, &v, 2); }
 
@@ -139,19 +176,25 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
     last.c = c;
     last.steps = steps;
     last.sweep_ms = sweep_ms;
+    char ssid[sizeof(wifi.ssid) * 6];
+    json_escape(wifi.ssid, ssid, sizeof(ssid));
     snprintf(status_text, sizeof(status_text),
              "{\"type\":\"status\",\"linked\":%s,\"info\":\"%s\",\"start\":%u,\"stop\":%u,\"rate\":%u,"
              "\"dwell\":%u,\"det\":%u,\"gain\":%d,\"gain_max\":%u,\"steps\":%u,\"step_khz\":%u,"
              "\"sweep_ms\":%u,\"error\":\"%s\",\"cal\":%d,\"bands\":%u,\"noise\":%s,"
              "\"markers\":[%d,%d,%d,%d],\"hold\":%u,\"avg\":%u,\"ytop\":%d,\"yrange\":%d,"
              "\"tune_ms\":%u,\"measure_ms\":%u,\"bat\":%d,\"bat_low\":%d,"
-             "\"lcd\":%d,\"lbright\":%d,\"lsleep\":%d,\"lflip\":%d,\"warn\":%d}",
+             "\"lcd\":%d,\"lbright\":%d,\"lsleep\":%d,\"lflip\":%d,\"warn\":%d,"
+             "\"wmode\":%d,\"wwait\":%d,\"wssid\":\"%s\",\"wpass\":%d,\"wstate\":%d,\"wfb\":%d,"
+             "\"wip\":\"%s\",\"ap\":\"%s\",\"mdns\":\"%s\"}",
              linked ? "true" : "false", info, c.start_mhz, c.stop_mhz, c.rate_code, c.dwell_ms,
              c.max_hold ? 1 : 0, c.gain, gain_max, steps, (unsigned)(2 * half_use_khz(c.rate_code)), sweep_ms,
              receiver_error, config.cal_tenths, config.bands, has_noise ? "true" : "false", config.markers[0],
              config.markers[1], config.markers[2], config.markers[3], config.hold, config.avg, config.ytop,
              config.yrange, (unsigned)sweep_tune_ms, (unsigned)sweep_measure_ms, battery_percent, BATTERY_LOW_PERCENT,
-             FPV_LCD ? 1 : 0, config.lcd_bright, config.lcd_sleep, config.lcd_flip ? 1 : 0, config.warn_dbfs);
+             FPV_LCD ? 1 : 0, config.lcd_bright, config.lcd_sleep, config.lcd_flip ? 1 : 0, config.warn_dbfs,
+             wifi.mode, wifi.wait, ssid, wifi.pass[0] ? 1 : 0, (int)wifi.state, wifi.fallback ? 1 : 0, wifi.ip,
+             AP_SSID, MDNS_NAME);
     status_dirty = true;
     xSemaphoreGive(lock);
 }
@@ -380,6 +423,8 @@ static void handle_text(const char *text) {
     refresh_status();
 }
 
+static void send_all(bool binary, const void *data, size_t size);
+
 static void store_noise(const uint8_t *data, size_t length) {
     if (length != sizeof(noise) || memcmp(data, "NSE2", 4)) return;
     xSemaphoreTake(lock, portMAX_DELAY);
@@ -387,7 +432,7 @@ static void store_noise(const uint8_t *data, size_t length) {
     has_noise = true;
     xSemaphoreGive(lock);
     prefs.putBytes("noise", noise, sizeof(noise));
-    ws.broadcastBIN(noise, sizeof(noise));
+    send_all(true, noise, sizeof(noise));
     refresh_status();
 }
 
@@ -396,6 +441,45 @@ static void clear_noise() {
     xSemaphoreTake(lock, portMAX_DELAY);
     has_noise = false;
     xSemaphoreGive(lock);
+    refresh_status();
+}
+
+/* "wifi\n<mode>\n<wait>\n<ssid>\n<password>\n<keep>" from the page (lines,
+ * since names may contain spaces); keep=1 keeps the saved password. The
+ * settings are saved and applied at once. */
+static void handle_wifi(const char *text) {
+    char field[6][65] = {};
+    int n = 0;
+    for (const char *p = text; n < 6; n++) {
+        const char *e = strchr(p, '\n');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (len >= sizeof(field[0])) return;
+        memcpy(field[n], p, len);
+        if (!e) {
+            n++;
+            break;
+        }
+        p = e + 1;
+    }
+    if (n != 6 || strcmp(field[0], "wifi")) return;
+    int mode = atoi(field[1]) ? 1 : 0, wait = atoi(field[2]);
+    bool keep = atoi(field[5]) != 0;
+    size_t pass_len = strlen(field[4]);
+    if ((wait != 15 && wait != 30 && wait != 60) || strlen(field[3]) > 32 || (pass_len && pass_len < 8)) return;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    const char *pass = keep ? wifi.pass : field[4];
+    bool restart = mode != wifi.mode || strcmp(field[3], wifi.ssid) || strcmp(pass, wifi.pass) ||
+                   (wifi.fallback && mode == 1); /* try the network again */
+    wifi.mode = mode;
+    wifi.wait = wait;
+    strlcpy(wifi.ssid, field[3], sizeof(wifi.ssid));
+    if (!keep) strlcpy(wifi.pass, field[4], sizeof(wifi.pass));
+    if (restart) wifi.restart = true;
+    xSemaphoreGive(lock);
+    prefs.putInt("wmode", wifi.mode);
+    prefs.putInt("wwait", wifi.wait);
+    prefs.putString("wssid", wifi.ssid);
+    prefs.putString("wpass", wifi.pass);
     refresh_status();
 }
 
@@ -416,16 +500,33 @@ static void on_ws(uint8_t client, WStype_t type, uint8_t *payload, size_t length
         if (has_noise) ws.sendBIN(client, noise, sizeof(noise));
         if (any) ws.sendBIN(client, latest, sizeof(latest));
     } else if (type == WStype_TEXT) {
-        char text[128];
+        char text[200];
         size_t n = length < sizeof(text) - 1 ? length : sizeof(text) - 1;
         memcpy(text, payload, n);
         text[n] = '\0';
         if (!strcmp(text, "noise clear"))
             clear_noise();
+        else if (!strncmp(text, "wifi\n", 5))
+            handle_wifi(text);
         else
             handle_text(text);
     } else if (type == WStype_BIN) {
         store_noise(payload, length);
+    }
+}
+
+/* Sends to every page in turn. A page that cannot take the data within
+ * WEBSOCKETS_TCP_TIMEOUT (a phone that went away or is still joining) is
+ * dropped, so it never holds up the others: the library waits for it in a
+ * busy loop. The page reconnects by itself. */
+static void send_all(bool binary, const void *data, size_t size) {
+    for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; i++) {
+        if (!ws.clientIsConnected(i)) continue;
+        bool ok = binary ? ws.sendBIN(i, (const uint8_t *)data, size) : ws.sendTXT(i, (const char *)data, size);
+        if (!ok) {
+            Serial.printf("[%lu ms] page %u too slow, dropped\n", millis(), i);
+            ws.disconnect(i);
+        }
     }
 }
 
@@ -463,9 +564,9 @@ static void ws_task(void *) {
         if (save) save_settings();
         if (clear) clear_noise();
         if (store) store_noise(noise_request, sizeof(noise_request));
-        if (send_frame) ws.broadcastBIN(out, sizeof(out));
+        if (send_frame) send_all(true, out, sizeof(out));
         if (send_status) {
-            ws.broadcastTXT(status_out);
+            send_all(false, status_out, strlen(status_out));
             last_send = millis();
         }
         vTaskDelay(pdMS_TO_TICKS(2));
@@ -499,6 +600,9 @@ SweepStatus shared_status() {
     s.measure_ms = sweep_measure_ms;
     s.gain_max = gain_max;
     strlcpy(s.error, receiver_error, sizeof(s.error));
+    s.wifi_state = wifi.state;
+    s.wifi_fallback = wifi.fallback;
+    strlcpy(s.wifi_ip, wifi.ip, sizeof(s.wifi_ip));
     xSemaphoreGive(lock);
     return s;
 }
@@ -542,16 +646,103 @@ void shared_set_battery(int percent) {
     if (changed) refresh_status();
 }
 
+/* ---- Wi-Fi modes (run from loop()) ---- */
+static void set_wifi_state(WifiState state, bool fallback, const char *ip) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    wifi.state = state;
+    wifi.fallback = fallback;
+    strlcpy(wifi.ip, ip, sizeof(wifi.ip));
+    xSemaphoreGive(lock);
+    refresh_status();
+}
+
+/* The radio stays on 2.4 GHz (the dual-band ESP32-C5), away from the
+ * 5 GHz band being measured; needs Wi-Fi started. */
+static void radio_2g_only() {
+#if SOC_WIFI_SUPPORT_5G
+    WiFi.setBandMode(WIFI_BAND_MODE_2G_ONLY);
+#endif
+}
+
+static void start_host(bool fallback) {
+    MDNS.end();
+    WiFi.mode(WIFI_AP);
+    radio_2g_only();
+    WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, 0, AP_MAX_CLIENTS);
+    WiFi.setSleep(false);
+    set_wifi_state(WIFI_HOST, fallback, WiFi.softAPIP().toString().c_str());
+    Serial.printf("[%lu ms] Wi-Fi host%s: %s  http://%s/\n", millis(), fallback ? " (client failed)" : "", AP_SSID,
+                  wifi.ip);
+}
+
+static void start_client() {
+    MDNS.end();
+    WiFi.mode(WIFI_STA);
+    radio_2g_only();
+    WiFi.setSleep(false);
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(wifi.ssid, wifi.pass[0] ? wifi.pass : nullptr);
+    wifi.since = millis();
+    wifi.lost = false;
+    set_wifi_state(WIFI_CONNECTING, false, "");
+    Serial.printf("[%lu ms] Wi-Fi client: connecting to %s\n", millis(), wifi.ssid);
+}
+
+static void start_wifi() {
+    if (wifi.mode == 1 && wifi.ssid[0]) start_client();
+    else start_host(false);
+}
+
+static void poll_wifi() {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    bool restart = wifi.restart;
+    wifi.restart = false;
+    xSemaphoreGive(lock);
+    if (restart) {
+        start_wifi();
+        return;
+    }
+    uint32_t now = millis(), limit = (uint32_t)wifi.wait * 1000;
+    bool up = WiFi.status() == WL_CONNECTED;
+    if (wifi.state == WIFI_CONNECTING) {
+        if (up) {
+            MDNS.begin(MDNS_NAME);
+            MDNS.addService("http", "tcp", 80);
+            set_wifi_state(WIFI_CLIENT, false, WiFi.localIP().toString().c_str());
+            Serial.printf("[%lu ms] Wi-Fi client: %s  http://%s/  http://%s.local/\n", now, wifi.ssid, wifi.ip,
+                          MDNS_NAME);
+        } else if (now - wifi.since >= limit) {
+            start_host(true);
+        }
+    } else if (wifi.state == WIFI_CLIENT) {
+        if (!up && !wifi.lost) {
+            wifi.lost = true;
+            wifi.since = now;
+            Serial.printf("[%lu ms] Wi-Fi client: connection lost\n", now);
+        } else if (!up && now - wifi.since >= limit) {
+            start_host(true);
+        } else if (up && wifi.lost) {
+            wifi.lost = false;
+            set_wifi_state(WIFI_CLIENT, false, WiFi.localIP().toString().c_str());
+        }
+    }
+}
+
 void setup() {
     Serial.begin(115200);
     lock = xSemaphoreCreateMutex();
     load_settings();
     last.c = config;
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL);
-    WiFi.setSleep(false);
+    /* The screen comes first; Wi-Fi start-up (and the band setting) takes a
+     * moment and never holds it back. */
+#if FPV_LCD
+    lcd_ui_begin();
+#endif
+    start_wifi();
+    /* Captive portal on the access point: every name resolves to it (the
+     * access point's address, also when it starts later as the fallback). */
     dns.setErrorReplyCode(DNSReplyCode::NoError);
-    dns.start(53, "*", WiFi.softAPIP());
+    dns.start(53, "*", IPAddress(192, 168, 4, 1));
     portal_http_begin(INDEX_HTML);
     ws.begin();
     ws.onEvent(on_ws);
@@ -562,21 +753,14 @@ void setup() {
     /* The ESP32-C5 (LCD build) has a single core. */
     const BaseType_t web_core = portNUM_PROCESSORS > 1 ? 1 : 0;
     xTaskCreatePinnedToCore(sweep_task, "sweep", 8192, nullptr, 2, nullptr, 0);
-    xTaskCreatePinnedToCore(ws_task, "ws", 8192, nullptr, 3, nullptr, web_core);
+    /* Priority 1, as the LCD and loop(): the WebSockets library waits for a
+     * slow page in a busy loop that would otherwise starve them. */
+    xTaskCreatePinnedToCore(ws_task, "ws", 8192, nullptr, 1, nullptr, web_core);
     xTaskCreatePinnedToCore(dns_task, "dns", 4096, nullptr, 3, nullptr, web_core);
-#if FPV_LCD
-    lcd_ui_begin();
-#endif
-#if SOC_WIFI_SUPPORT_5G
-    /* The ESP32-C5 (LCD build) is dual band: keep its radio on 2.4 GHz, away
-     * from the 5 GHz band being measured. Needs the AP started; done after
-     * the LCD task has started so that it never holds the screen back. */
-    WiFi.setBandMode(WIFI_BAND_MODE_2G_ONLY);
-#endif
-    Serial.printf("[%lu ms] AP %s  http://%s/\n", millis(), AP_SSID, WiFi.softAPIP().toString().c_str());
 }
 
 void loop() {
+    poll_wifi();
     portal_http_poll();
     delay(2);
 }

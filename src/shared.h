@@ -38,6 +38,9 @@ struct SweepStatus {
     unsigned steps, sweep_ms, tune_ms, measure_ms;
     unsigned gain_max; /* highest manual gain the C5 accepts, 0 = not known yet */
     char error[64];
+    int wifi_state;     /* 0: host (access point), 1: connecting, 2: client */
+    bool wifi_fallback; /* host because the client connection failed */
+    char wifi_ip[16];   /* the page's address ("" while connecting) */
 };
 
 SweepConfig shared_config();

@@ -8,6 +8,12 @@
 #define AP_SSID     "FPV-Scanner"
 #define AP_PASSWORD "fpv-scanner"
 #define AP_CHANNEL  1
+#define AP_MAX_CLIENTS 5 /* phones / PCs on the access point at once */
+/* Client mode (Wi-Fi of a router or a phone's hotspot): the network name
+ * and password are entered on the web page and kept only in the device's
+ * flash, never here. The page is then at http://MDNS_NAME.local/ (or the
+ * address shown on the LCD and the serial log). */
+#define MDNS_NAME   "fpv-scanner"
 
 /* ---- UART link to the XIAO ESP32-C5 (ESP-SDR firmware) --------------- */
 #if FPV_LCD147

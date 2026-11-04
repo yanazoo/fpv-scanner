@@ -53,7 +53,7 @@ static void respond(Slot &s) {
         int n = snprintf(head, sizeof(head),
                          "HTTP/1.1 302 Found\r\nLocation: http://%s/\r\nContent-Length: 0\r\n"
                          "Cache-Control: no-store\r\nConnection: close\r\n\r\n",
-                         WiFi.softAPIP().toString().c_str());
+                         c.localIP().toString().c_str()); /* the address it came in on */
         write_all(c, (const uint8_t *)head, n);
     }
     c.stop();

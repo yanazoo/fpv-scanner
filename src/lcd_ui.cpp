@@ -595,6 +595,18 @@ void draw_advanced() {
     label(4, "ボタン", s);
     button(half(4, 0), "-1秒");
     button(half(4, 1), "+1秒");
+    /* Wi-Fi state (set on the web page): where to find the page */
+    /* (yellow: host because the client connection failed) */
+    const char *mode = st.wifi_state == 1 ? "接続中…" : st.wifi_state == 2 ? "クライアント" : "ホスト";
+    uint16_t c = st.wifi_fallback ? YELLOW : GRAY;
+    snprintf(s, sizeof(s), "Wi-Fi: %s", mode);
+    if (landscape) { /* one line */
+        int x = text(0, row_text_y(5), s, c);
+        text(x + 8, row_text_y(5), st.wifi_ip, c);
+    } else {
+        text(0, row_y(5) + 1, s, c);
+        text(56, row_y(5) + BH - 17, st.wifi_ip, c);
+    }
 }
 
 /* ---- touch ---- */

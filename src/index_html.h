@@ -66,6 +66,14 @@ td.ch{cursor:pointer}#mt td:first-child,#mt th:first-child{width:1%;white-space:
  <button id="applyl">適用</button>
 </div></div>
 
+<div class="box"><div class="row">
+ Wi-Fi <label><select id="wmode"><option value="0">ホスト</option><option value="1">クライアント</option></select></label>
+ <label>待ち時間 <select id="wwait"><option value="15">15秒</option><option value="30">30秒</option><option value="60">60秒</option></select></label>
+ <label>接続先 <input id="wssid" maxlength="32" placeholder="SSID" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+ <label>パスワード <input type="password" id="wpass" maxlength="63" placeholder="変更しないときは空欄" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+ <button id="applyw">適用</button>
+</div><div class="row" id="wst" style="font-size:12px;color:#8b949e"></div></div>
+
 </main>
 <script>
 const BANDS={A:[5865,5845,5825,5805,5785,5765,5745,5725],B:[5733,5752,5771,5790,5809,5828,5847,5866],
@@ -118,6 +126,22 @@ $('applys').onclick=()=>{const a=Math.round(+$('start').value),b=Math.max(a+5,Ma
 // LCD builds only: backlight, power saving, landscape turned over
 $('applyl').onclick=()=>apply(`cfg lbright=${Math.round(+$('lbright').value)} lsleep=${Math.round(+$('lsleep').value)} lflip=${+$('lflip').checked}`,$('applyl'));
 $('applyr').onclick=()=>apply(`cfg rate=${$('rate').value} dwell=${$('dwell').value} det=${$('det').value} gain=${$('gain').value} cal=${Math.round(+$('cal').value*10)} warn=${Math.round(+$('warnd').value)}`,$('applyr'));
+// Wi-Fi: host = own access point; client = join the network, and when that fails for the
+// set time start the access point instead. Applied at once (this page reconnects).
+dirtyOn(['wmode','wwait','wssid','wpass'],'applyw');
+$('applyw').onclick=()=>{const m=$('wmode').value,ssid=$('wssid').value.trim(),pw=$('wpass').value;
+ if(m==='1'&&!ssid){alert('接続先（SSID）を入力してください');return}
+ if(pw&&(pw.length<8||pw.length>63)){alert('パスワードは8〜63文字です');return}
+ if(/\n/.test(ssid+pw)){alert('改行は使えません');return}
+ // An empty password keeps the saved one for the same network; a new network without one is open.
+ const keep=!pw&&ssid===(cfg.wssid??'')?1:0;
+ if((m!==String(cfg.wmode)||ssid!==cfg.wssid||pw)&&!confirm('Wi-Fiを切り替えます。この画面の接続はいったん切れます。'))return;
+ if(send(['wifi',m,$('wwait').value,ssid,pw,keep].join('\n'))){$('applyw').classList.remove('dirty');$('wpass').value=''}};
+function wifiState(s){const st=s.wstate??0;
+ $('wst').textContent=st===1?`クライアント: ${s.wssid} に接続中…`:st===2?`クライアント: ${s.wssid} に接続中（http://${s.wip}/ または http://${s.mdns}.local/）`:
+  `ホスト: SSID ${s.ap}（http://${s.wip}/）`+(s.wfb?' ※接続先につながらなかったためホストで起動':'');
+ if(!$('applyw').classList.contains('dirty')){$('wmode').value=s.wmode;$('wwait').value=s.wwait;$('wssid').value=s.wssid;
+  $('wpass').placeholder=s.wpass?'変更しないときは空欄':'なし（オープン）'}}
 // Display settings take effect at once; the S3 saves them after typing pauses.
 let dispTimer,dispEdit=0;
 function display(){const top=Math.round(+$('ytop').value),yr=Math.round(+$('yrng').value);if(!isFinite(top)||!(yr>=10))return;
@@ -156,7 +180,7 @@ function onStatus(s){
  $('lcdbox').hidden=!s.lcd;if(s.lcd&&!$('applyl').classList.contains('dirty')){$('lbright').value=s.lbright;$('lsleep').value=s.lsleep;$('lflip').checked=!!s.lflip}
  // Battery of the LCD build (-1: none, as on the S3).
  const b=s.bat??-1;$('bat').textContent=b<0?'':`電池${b}%`;$('bat').className=b<0?'':b<(s.bat_low??10)?'lo':b<50?'mid':'hi';
- gerr=s.error;showErr();if(s.error)$('gain').value=s.gain;
+ wifiState(s);gerr=s.error;showErr();if(s.error)$('gain').value=s.gain;
  if(s.gain_max)$('grange').textContent=`-1=自動、2〜${s.gain_max}（小さいほど強い電波向き、大きいほど弱い電波向き）`;placed()}
 // Errors and warnings share the header bar.
 let gerr='';function showErr(){$('err').textContent=[gerr,warn].filter(Boolean).join(' / ')}
