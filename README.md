@@ -79,7 +79,7 @@ TX と RX はたすき掛けです。C5 は無線起動時に電流が増える�
 
 1. Visual Studio Code に PlatformIO 拡張を入れる
 2. このリポジトリを clone（または ZIP でダウンロード）し、そのフォルダを「フォルダーを開く」で開く
-3. Wi-Fi の初期値は SSID `FPV-Scanner`、パスワード `FPV-Scanner` です（公開済みの値）。
+3. Wi-Fi の初期値は SSID `FPV-Scanner`、パスワード `fpv-scanner` です（公開済みの値）。
    変更する場合は `src/config.h` の `AP_SSID` / `AP_PASSWORD` を書き換えます
    （パスワードは 8 文字以上）
 4. S3 を USB 接続し、PlatformIO の「Upload」（→ボタン）で書き込む
@@ -109,7 +109,7 @@ TX と RX はたすき掛けです。C5 は無線起動時に電流が増える�
 ## 4. 使い方
 
 1. 両方のボードに電源を入れる
-2. スマホで Wi-Fi `FPV-Scanner` にパスワード `FPV-Scanner` で接続する
+2. スマホで Wi-Fi `FPV-Scanner` にパスワード `fpv-scanner` で接続する
 3. キャプティブポータルで画面が自動的に開きます
    - iPhone: 接続するとログイン画面としてそのまま開きます
    - Android: 「ネットワークにログイン」の通知をタップします。

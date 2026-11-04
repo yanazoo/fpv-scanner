@@ -6,7 +6,7 @@
  * These values are public (committed to the repository). WPA2 needs a
  * password of at least 8 characters. */
 #define AP_SSID     "FPV-Scanner"
-#define AP_PASSWORD "FPV-Scanner"
+#define AP_PASSWORD "fpv-scanner"
 #define AP_CHANNEL  1
 
 /* ---- UART link to the XIAO ESP32-C5 (ESP-SDR firmware) --------------- */
