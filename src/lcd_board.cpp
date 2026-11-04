@@ -91,10 +91,7 @@ bool lcd_board_begin() {
     bool io_ok;
     while (!(io_ok = exio_write(EXIO_MODE, 0xFF) && exio_write(EXIO_OUTPUT, exio_out)) && millis() - t0 < 3000)
         delay(20);
-    if (!io_ok) {
-        Serial.printf("[%lu ms] LCD: I/O expander not answering\n", millis());
-        return false;
-    }
+    if (!io_ok) return false;
     lcd_expander_wait_ms = millis() - t0;
     delay(20); /* let it settle */
     exio_write(EXIO_MODE, 0xFF);
@@ -115,8 +112,6 @@ bool lcd_board_begin() {
     lcd_panel_setup(120);
 
     lcd_touch_begin();
-    Serial.printf("[%lu ms] LCD: ready (expander answered after %lu ms)\n", millis(),
-                  (unsigned long)lcd_expander_wait_ms);
     return true;
 }
 
@@ -161,7 +156,6 @@ bool lcd_touch_begin() {
     delay(300);
     Wire.beginTransmission(TOUCH_ADDR);
     touch_ok = Wire.endTransmission() == 0;
-    Serial.printf("[%lu ms] LCD: touch %s\n", millis(), touch_ok ? "ok" : "not found");
     return touch_ok;
 }
 

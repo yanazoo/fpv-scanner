@@ -16,7 +16,6 @@
  * STRIP rows: the whole scene is drawn into each strip, clipped. */
 #include "lcd_ui.h"
 #include <Arduino.h>
-#include <esp_system.h>
 #include "lcd_board.h"
 #include "lcd_font.h"
 #include "shared.h"
@@ -863,45 +862,19 @@ int battery_percent(float mv) {
     return 0;
 }
 
-/* Every 2 s; the voltage is smoothed because radio bursts pull it down. */
-/* Why the chip last started, to tell a power-on or the reset button from
- * a crash, a watchdog or a supply dip (brownout). */
-const char *reset_reason() {
-    switch (esp_reset_reason()) {
-    case ESP_RST_POWERON: return "power-on";
-    case ESP_RST_EXT: return "reset pin";
-    case ESP_RST_SW: return "software restart";
-    case ESP_RST_PANIC: return "CRASH (panic)";
-    case ESP_RST_INT_WDT:
-    case ESP_RST_TASK_WDT:
-    case ESP_RST_WDT: return "WATCHDOG";
-    case ESP_RST_BROWNOUT: return "BROWNOUT (supply dip)";
-    case ESP_RST_USB: return "USB (download tool)";
-    case ESP_RST_JTAG: return "JTAG";
-    default: return "other";
-    }
-}
-
-int backlight = -1;       /* percent currently set, -1 = not yet */
-unsigned bring_ups;       /* LCD bring-ups since start */
-uint32_t first_screen_ms; /* time of the last bring-up's first screen */
-
-int last_raw = -1;
-float battery_mv;
-unsigned battery_bad_reads;
+int backlight = -1; /* percent currently set, -1 = not yet */
 
 /* Every BATTERY_READ_MS. Each read is a transfer the expander may garble
  * (seen: about 1 in 10 at a 2 s interval), so it reads seldom. */
 void read_battery() {
     if (!BATTERY_GAUGE) return;
     static float mv_avg;
-    static unsigned reads, misses, bad_reads;
+    static unsigned misses;
     int raw = lcd_battery_raw();
     float mv = raw * BATTERY_MV_PER_COUNT;
     /* A reading far from the average is a garbled transfer (seen: 67
      * instead of about 435), not the battery: it is dropped. */
     bool garbled = raw >= 0 && mv_avg && fabsf(mv - mv_avg) > 300;
-    if (garbled) bad_reads++;
     if (garbled) {
     } else if (raw < 0 || mv < 2500 || mv > 4600) {
         /* No battery, or a failed read: hide the level only when it lasts,
@@ -915,23 +888,7 @@ void read_battery() {
         mv_avg = mv_avg ? mv_avg * 0.8f + mv * 0.2f : mv;
         battery = battery_percent(mv_avg);
     }
-    last_raw = raw;
-    battery_mv = mv_avg;
-    battery_bad_reads = bad_reads;
-    reads++;
     shared_set_battery(battery);
-}
-
-/* About every 10 s, with the start-up timings: the USB serial port
- * reconnects only after the start, so the log lines printed then are
- * usually missed. */
-void log_status() {
-    Serial.printf("battery raw=%d mv=%.0f %d%% | LCD up %u time(s), last: expander answered after %lu ms, "
-                  "first screen at %lu ms | uptime %lu s, started by %s | gauge %d refresh %d | "
-                  "I2C errors %u, bad battery reads %u, backlight %d%%\n",
-                  last_raw, battery_mv, battery, bring_ups, (unsigned long)lcd_expander_wait_ms,
-                  (unsigned long)first_screen_ms, millis() / 1000, reset_reason(), BATTERY_GAUGE, EXPANDER_REFRESH,
-                  lcd_expander_errors, battery_bad_reads, backlight);
 }
 
 /* ---- backlight and power saving ----
@@ -950,10 +907,7 @@ int wanted_backlight(uint32_t now) {
 
 void update_backlight(uint32_t now) {
     int want = wanted_backlight(now);
-    if (want != backlight && lcd_backlight(want)) {
-        backlight = want;
-        Serial.printf("[%lu ms] LCD: backlight %d%%\n", now, want);
-    }
+    if (want != backlight && lcd_backlight(want)) backlight = want;
 }
 
 #ifndef LCD_BUTTON_LONG_MS
@@ -1004,32 +958,21 @@ void bring_up() {
     }
     set_layout(false); /* the LCD set-up leaves it in portrait */
     flipped = false;
-    bring_ups++;
     read_battery();
     render();
     lcd_display_on();
     lcd_backlight(backlight);
-    first_screen_ms = millis();
-    Serial.printf("[%lu ms] LCD: first screen\n", millis());
 }
 
 void lcd_task(void *) {
     buf = (uint16_t *)malloc(LCD_H * STRIP * sizeof(uint16_t));
-    if (!buf) {
-        Serial.println("LCD: no memory for the strip buffer");
-        vTaskDelete(nullptr);
-    }
+    if (!buf) vTaskDelete(nullptr); /* no memory for the strip buffer */
     bring_up();
     bool expander_lost = false;
-    uint32_t last_draw = millis(), last_battery = last_draw, last_refresh = last_draw, last_log = 0;
+    uint32_t last_draw = millis(), last_battery = last_draw, last_refresh = last_draw;
     bool dirty = true;
     bool waking = false; /* the touch that woke the screen does nothing else */
-    uint32_t last_pass = millis();
     for (;;) {
-        /* diagnostics: the screen did not get its turn for a while */
-        uint32_t pass = millis();
-        if (pass - last_pass > 500) Serial.printf("[%lu ms] SLOW: LCD waited %lu ms\n", pass, pass - last_pass);
-        last_pass = pass;
         poll_touch();
         if (touch.pressed) {
             touch.pressed = false;
@@ -1079,10 +1022,6 @@ void lcd_task(void *) {
             dirty = true;
         }
         uint32_t now = millis();
-        if (now - last_log >= 10000) {
-            last_log = now;
-            log_status();
-        }
         if (now - last_battery >= BATTERY_READ_MS) {
             last_battery = now;
             read_battery();
@@ -1093,7 +1032,6 @@ void lcd_task(void *) {
              * dip) and reset the LCD with it: bring everything up again
              * once it answers. */
             if (!lcd_board_refresh(backlight < 0 ? 0 : backlight)) {
-                if (!expander_lost) Serial.printf("[%lu ms] LCD: I/O expander lost\n", now);
                 expander_lost = true;
                 continue;
             }

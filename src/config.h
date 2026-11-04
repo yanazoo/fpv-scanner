@@ -14,7 +14,7 @@
 /* Client mode (Wi-Fi of a router or a phone's hotspot): the network name
  * and password are entered on the web page and kept only in the device's
  * flash, never here. The page is then at http://MDNS_NAME.local/ (or the
- * address shown on the LCD and the serial log). */
+ * address shown on the LCD and the web page). */
 #define MDNS_NAME   "fpv-scanner"
 
 /* ---- UART link to the XIAO ESP32-C5 (ESP-SDR firmware) --------------- */
@@ -50,9 +50,9 @@
 #define LCD_LANDSCAPE_FLIP 0
 /* Battery gauge: VBAT reaches the I/O expander's ADC through a 200k/100k
  * divider (1/3). mV = ADC count * BATTERY_MV_PER_COUNT; 3300 mV * 3 / 1023
- * assumes a 10-bit ADC referred to 3.3 V. If the voltage in the serial log
- * ("battery raw=... mv=...") differs from a meter on the battery, scale this
- * by meter / shown. */
+ * assumes a 10-bit ADC referred to 3.3 V. If the level shown is off (a full
+ * 4.2 V cell not near 100 %), raise this a little when it reads low, lower
+ * it when it reads high. */
 #define BATTERY_MV_PER_COUNT 9.677f
 /* Test switches for the I/O expander traffic added after the first
  * version (screen start-up investigation):

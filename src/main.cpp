@@ -540,10 +540,7 @@ static uint8_t noise_request[FRAME_SIZE];
 static bool noise_store_requested, noise_clear_requested;
 
 static void on_ws(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
-    if (type == WStype_DISCONNECTED) {
-        Serial.printf("[%lu ms] page %u disconnected\n", millis(), client);
-    } else if (type == WStype_CONNECTED) {
-        Serial.printf("[%lu ms] page %u connected\n", millis(), client);
+    if (type == WStype_CONNECTED) {
         /* A (re)connecting page gets the latest sweep at once. */
         static uint8_t latest[sizeof(frame)];
         xSemaphoreTake(lock, portMAX_DELAY);
@@ -586,7 +583,6 @@ static void send_all(bool binary, const void *data, size_t size) {
         if (!ws.writable(i)) {
             if (!stuck_since[i]) stuck_since[i] = now | 1;
             else if (now - stuck_since[i] > 2000) {
-                Serial.printf("[%lu ms] page %u not reading, dropped\n", now, i);
                 ws.drop(i);
                 stuck_since[i] = 0;
             }
@@ -605,9 +601,7 @@ static void ws_task(void *) {
     static char status_out[sizeof(status_text)];
     uint32_t last_send = 0;
     for (;;) {
-        uint32_t t0 = millis();
         ws.loop();
-        if (millis() - t0 > 300) Serial.printf("[%lu ms] SLOW: page server %lu ms\n", millis(), millis() - t0);
         /* Status at least every 2 s, so pages can tell a long sweep from a
          * dead connection (they reconnect after 5 s of silence). */
         if (millis() - last_send > 2000) {
@@ -634,13 +628,11 @@ static void ws_task(void *) {
         if (save) save_settings();
         if (clear) clear_noise();
         if (store) store_noise(noise_request, sizeof(noise_request));
-        t0 = millis();
         if (send_frame) send_all(true, out, sizeof(out));
         if (send_status) {
             send_all(false, status_out, strlen(status_out));
             last_send = millis();
         }
-        if (millis() - t0 > 300) Serial.printf("[%lu ms] SLOW: sending to pages %lu ms\n", millis(), millis() - t0);
         vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
@@ -748,8 +740,6 @@ static void start_host(bool fallback) {
     WiFi.softAP(wifi.ap_ssid, wifi.ap_pass, AP_CHANNEL, 0, AP_MAX_CLIENTS);
     WiFi.setSleep(false);
     set_wifi_state(WIFI_HOST, fallback, WiFi.softAPIP().toString().c_str());
-    Serial.printf("[%lu ms] Wi-Fi host%s: %s  http://%s/\n", millis(), fallback ? " (client failed)" : "", wifi.ap_ssid,
-                  wifi.ip);
 }
 
 static void start_client() {
@@ -763,35 +753,11 @@ static void start_client() {
     wifi.since = millis();
     wifi.lost = false;
     set_wifi_state(WIFI_CONNECTING, false, "");
-    Serial.printf("[%lu ms] Wi-Fi client: connecting to %s\n", millis(), wifi.ssid);
 }
 
-/* Diagnostics in the serial log: phones / PCs joining and leaving the access
- * point (a phone that leaves for a network with internet looks like a
- * freeze on the page), and why a client connection dropped. */
+/* Why the last client connection attempt failed, shown on the page. */
 static void on_wifi_event(arduino_event_id_t event, arduino_event_info_t info) {
-    switch (event) {
-    case ARDUINO_EVENT_WIFI_AP_STACONNECTED:
-        Serial.printf("[%lu ms] Wi-Fi host: device ..%02x:%02x joined (%d on the access point)\n", millis(),
-                      info.wifi_ap_staconnected.mac[4], info.wifi_ap_staconnected.mac[5], WiFi.softAPgetStationNum());
-        break;
-    case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED: {
-        unsigned reason = 0; /* not reported by the older core of the S3 build */
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
-        reason = info.wifi_ap_stadisconnected.reason;
-#endif
-        Serial.printf("[%lu ms] Wi-Fi host: device ..%02x:%02x left (reason %u, %d on the access point)\n", millis(),
-                      info.wifi_ap_stadisconnected.mac[4], info.wifi_ap_stadisconnected.mac[5], reason,
-                      WiFi.softAPgetStationNum());
-        break;
-    }
-    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-        wifi.reason = info.wifi_sta_disconnected.reason;
-        Serial.printf("[%lu ms] Wi-Fi client: disconnected (reason %u)\n", millis(), wifi.reason);
-        break;
-    default:
-        break;
-    }
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) wifi.reason = info.wifi_sta_disconnected.reason;
 }
 
 static void start_wifi() {
@@ -815,8 +781,6 @@ static void poll_wifi() {
             MDNS.begin(MDNS_NAME);
             MDNS.addService("http", "tcp", 80);
             set_wifi_state(WIFI_CLIENT, false, WiFi.localIP().toString().c_str());
-            Serial.printf("[%lu ms] Wi-Fi client: %s  http://%s/  http://%s.local/\n", now, wifi.ssid, wifi.ip,
-                          MDNS_NAME);
         } else if (now - wifi.since >= limit) {
             start_host(true);
         }
@@ -824,7 +788,6 @@ static void poll_wifi() {
         if (!up && !wifi.lost) {
             wifi.lost = true;
             wifi.since = now;
-            Serial.printf("[%lu ms] Wi-Fi client: connection lost\n", now);
         } else if (!up && now - wifi.since >= limit) {
             start_host(true);
         } else if (up && wifi.lost) {
@@ -867,11 +830,7 @@ void setup() {
 }
 
 void loop() {
-    uint32_t t0 = millis();
     poll_wifi();
-    uint32_t t1 = millis();
     portal_http_poll();
-    uint32_t t2 = millis();
-    if (t2 - t0 > 300) Serial.printf("[%lu ms] SLOW: wifi %lu ms, http %lu ms\n", t2, t1 - t0, t2 - t1);
     delay(2);
 }
