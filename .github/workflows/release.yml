@@ -1,0 +1,76 @@
+# Builds the firmware of every board and publishes a GitHub release.
+# Run it from the Actions tab ("Run workflow"): the tag v<version> is made on
+# <ref> (a branch, e.g. 1.0.0), the notes are the "## <version>" part of
+# CHANGELOG.md and each board's firmware is attached as one image to write
+# at 0x0 (e.g. esptool write-flash 0x0 <file>, or a web flasher).
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (CHANGELOG heading and tag v<version>)"
+        required: true
+        default: "1.0.0"
+      ref:
+        description: "Branch or commit to release"
+        required: true
+        default: "1.0.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { dir: ".", env: xiao_esp32s3, chip: esp32s3, name: xiao-esp32s3 }
+          - { dir: c5_touch_lcd, env: c5_touch_lcd, chip: esp32c5, name: esp32c5-touch-lcd-2.8 }
+          - { dir: c5_lcd147, env: c5_lcd147, chip: esp32c5, name: esp32c5-lcd-1.47 }
+          - { dir: xiao_c5, env: xiao_c5, chip: esp32c5, name: xiao-esp32c5 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PlatformIO and esptool
+        run: pip install platformio esptool
+      - name: Build
+        run: pio run -d "${{ matrix.dir }}" -e "${{ matrix.env }}"
+      - name: Merge into one image
+        # the helper from the default branch, so older refs can be released too
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/tools/merge_firmware.py" -o /tmp/merge_firmware.py
+          python /tmp/merge_firmware.py "${{ matrix.dir }}" "${{ matrix.env }}" "${{ matrix.chip }}" \
+            "fpv-scanner-${{ inputs.version }}-${{ matrix.name }}.bin"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: fpv-scanner-*.bin
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="## ${{ inputs.version }}" '$0==v{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
+          test -s notes.md || echo "FPV Scanner ${{ inputs.version }}" > notes.md
+          cat notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ inputs.version }}" dist/*.bin \
+            --target "$(git rev-parse HEAD)" --title "${{ inputs.version }}" --notes-file notes.md
