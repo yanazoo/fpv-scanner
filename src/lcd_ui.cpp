@@ -502,8 +502,11 @@ void draw_title(const char *title, int buttons) {
 /* ---- settings (first page): span, gain, bands, noise reference ----
  * Each change goes through the same "cfg" lines as the page's apply buttons:
  * it is saved and restarts the sweep where needed. */
-const unsigned PRESET[2][2] = {{5650, 5850}, {5640, 5950}};
-const char *const PRESET_NAME[2] = {"5650-5850", "5640-5950"};
+/* span presets: three equal buttons (the range itself shows below スパン) */
+const int PRESETS = 3;
+const unsigned PRESET[PRESETS][2] = {{5650, 5850}, {5640, 5950}, {2400, 2500}};
+const char *const PRESET_NAME[PRESETS] = {"5.8G", "5.8G広", "2.4G"};
+Rect preset_button(int i) { return cell(0, i, i + 1, PRESETS); }
 const char *const MHZ_STEP[4] = {"-10", "-1", "+1", "+10"};
 
 void draw_settings() {
@@ -511,8 +514,8 @@ void draw_settings() {
     draw_title("設定", 4);
     snprintf(s, sizeof(s), "%u-%u", cfg.start_mhz, cfg.stop_mhz);
     label(0, "スパン", s);
-    for (int i = 0; i < 2; i++)
-        button(half(0, i), PRESET_NAME[i], cfg.start_mhz == PRESET[i][0] && cfg.stop_mhz == PRESET[i][1]);
+    for (int i = 0; i < PRESETS; i++)
+        button(preset_button(i), PRESET_NAME[i], cfg.start_mhz == PRESET[i][0] && cfg.stop_mhz == PRESET[i][1]);
     snprintf(s, sizeof(s), "%u", cfg.start_mhz);
     label(1, "開始", s);
     four(1, MHZ_STEP);
@@ -821,8 +824,9 @@ void press_settings(int x, int y) {
     else if (BTN_ADVANCED.in(x, y)) screen = ADVANCED;
     else if (BTN_RECEIVER.in(x, y)) screen = RECEIVER;
     else if (BTN_WIFI.in(x, y)) screen = WIFI;
-    else if (half(0, 0).in(x, y)) set_span(PRESET[0][0], PRESET[0][1]);
-    else if (half(0, 1).in(x, y)) set_span(PRESET[1][0], PRESET[1][1]);
+    else if (preset_button(0).in(x, y)) set_span(PRESET[0][0], PRESET[0][1]);
+    else if (preset_button(1).in(x, y)) set_span(PRESET[1][0], PRESET[1][1]);
+    else if (preset_button(2).in(x, y)) set_span(PRESET[2][0], PRESET[2][1]);
     else if (half(5, 1).in(x, y)) shared_clear_noise();
     else if (half(5, 0).in(x, y) && have) {
         /* the running average of the current span, as the page saves it */

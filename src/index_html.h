@@ -41,7 +41,7 @@ td.ch{cursor:pointer}#mt td:first-child,#mt th:first-child{width:1%;white-space:
 
 <div class="box"><div class="row">
  <label>開始 <input type="number" id="start"></label><label>終了 <input type="number" id="stop"></label> MHz
- <button class="pre" data-a="5650" data-b="5850">5650-5850</button><button class="pre" data-a="5640" data-b="5950">5640-5950</button>
+ <button class="pre" data-a="5650" data-b="5850">5650-5850</button><button class="pre" data-a="5640" data-b="5950">5640-5950</button><button class="pre" data-a="2400" data-b="2500">2400-2500</button>
  <button id="applys">適用</button>
 </div></div>
 
