@@ -579,7 +579,7 @@ void draw_advanced() {
     label(0, "画面の向き");
     button(col(0, 0), "縦", !cfg.lcd_land);
     button(col(0, 1), "横", cfg.lcd_land);
-    button(cell(0, 2, 4, 4), "反転", cfg.lcd_flip);
+    button(col(0, 2), "反転", cfg.lcd_flip);
     /* "ゲイン下げて" shows when the strongest point exceeds this (dBFS) */
     snprintf(s, sizeof(s), "%ddBFS", cfg.warn_dbfs);
     label(1, "警告", s);
@@ -766,7 +766,7 @@ void press_advanced(int x, int y) {
     if (BTN_BACK.in(x, y)) screen = SETTINGS;
     else if (col(0, 0).in(x, y)) apply("cfg lland=%d", 0);
     else if (col(0, 1).in(x, y)) apply("cfg lland=%d", 1);
-    else if (cell(0, 2, 4, 4).in(x, y)) apply("cfg lflip=%d", !cfg.lcd_flip);
+    else if (col(0, 2).in(x, y)) apply("cfg lflip=%d", !cfg.lcd_flip);
     else if (half(2, 0).in(x, y)) apply("cfg lbright=%d", max(cfg.lcd_bright - 10, 10));
     else if (half(2, 1).in(x, y)) apply("cfg lbright=%d", min(cfg.lcd_bright + 10, 100));
     else if (half(4, 0).in(x, y)) apply("cfg lpanel=%d", max(cfg.lcd_panel - 1, 0));
