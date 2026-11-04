@@ -737,6 +737,11 @@ static void radio_2g_only() {
 
 static void start_host(bool fallback) {
     MDNS.end();
+    /* Stop the client completely first: its automatic reconnection would
+     * keep searching for the network on other channels and take the access
+     * point's channel with it. */
+    WiFi.setAutoReconnect(false);
+    if (WiFi.getMode() & WIFI_MODE_STA) WiFi.disconnect(true);
     WiFi.mode(WIFI_AP);
     radio_2g_only();
     WiFi.softAP(wifi.ap_ssid, wifi.ap_pass, AP_CHANNEL, 0, AP_MAX_CLIENTS);
@@ -757,6 +762,34 @@ static void start_client() {
     wifi.lost = false;
     set_wifi_state(WIFI_CONNECTING, false, "");
     Serial.printf("[%lu ms] Wi-Fi client: connecting to %s\n", millis(), wifi.ssid);
+}
+
+/* Diagnostics in the serial log: phones / PCs joining and leaving the access
+ * point (a phone that leaves for a network with internet looks like a
+ * freeze on the page), and why a client connection dropped. */
+static void on_wifi_event(arduino_event_id_t event, arduino_event_info_t info) {
+    switch (event) {
+    case ARDUINO_EVENT_WIFI_AP_STACONNECTED:
+        Serial.printf("[%lu ms] Wi-Fi host: device ..%02x:%02x joined (%d on the access point)\n", millis(),
+                      info.wifi_ap_staconnected.mac[4], info.wifi_ap_staconnected.mac[5], WiFi.softAPgetStationNum());
+        break;
+    case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED: {
+        unsigned reason = 0; /* not reported by the older core of the S3 build */
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+        reason = info.wifi_ap_stadisconnected.reason;
+#endif
+        Serial.printf("[%lu ms] Wi-Fi host: device ..%02x:%02x left (reason %u, %d on the access point)\n", millis(),
+                      info.wifi_ap_stadisconnected.mac[4], info.wifi_ap_stadisconnected.mac[5], reason,
+                      WiFi.softAPgetStationNum());
+        break;
+    }
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+        Serial.printf("[%lu ms] Wi-Fi client: disconnected (reason %u)\n", millis(),
+                      info.wifi_sta_disconnected.reason);
+        break;
+    default:
+        break;
+    }
 }
 
 static void start_wifi() {
@@ -804,6 +837,7 @@ void setup() {
     lock = xSemaphoreCreateMutex();
     load_settings();
     last.c = config;
+    WiFi.onEvent(on_wifi_event);
     /* The screen comes first; Wi-Fi start-up (and the band setting) takes a
      * moment and never holds it back. */
 #if FPV_LCD
