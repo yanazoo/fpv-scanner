@@ -296,6 +296,13 @@ MT9700 の仕様は Aerosemi のデータシートによります（WeAct モジ
 `'riscv32-esp-elf-g++' は、内部コマンドまたは外部コマンド…として認識されていません`
 のようなエラーになります。液晶版の部品は `ユーザーフォルダ\.platformio\c5\` に別に保存されます。
 
+書き込みに使う esptool（Python の部品）は、PlatformIO の全プロジェクトで共有されています。
+ほかのプロジェクトや PlatformIO の更新で別の版（5.1.0 など）に入れ替わることがあるため、
+ESP32-C5 の各版はビルド・書き込みの前に esptool の版を確かめ、このプラットフォームの版（5.0.2）
+と違えば自動で入れ直します（`tools/pin_esptool.py`。ダウンロード済みの部品を使うので
+インターネットは不要です）。そのときは出力に `esptool 5.1.0 in PlatformIO's Python, installing 5.0.2`
+のように表示されます。
+
 pioarduino の新しい版（55.03.32 以降）は通常の PlatformIO IDE ではインストールできず、
 `MissingPackageManifestError: Could not find one of 'package.json' manifest files` で
 止まります。そのため通常の PlatformIO IDE で使える 55.03.30-2 を指定しています。
