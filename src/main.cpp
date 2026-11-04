@@ -20,6 +20,7 @@
 #include "sdr_link.h"
 #include "shared.h"
 #if FPV_LCD
+#include "lcd_board.h"
 #include "lcd_ui.h"
 #endif
 
@@ -92,14 +93,23 @@ static int battery_percent = -1; /* LCD build only */
  * succeed within wait seconds, or a connection is lost for as long, the
  * access point starts instead (until a restart or a new Wi-Fi setting).
  * A changed setting applies at once. The password is never reported. */
-enum WifiState { WIFI_HOST, WIFI_CONNECTING, WIFI_CLIENT };
+enum WifiState { NET_HOST, NET_CONNECTING, NET_CLIENT, NET_OFF };
+/* Only the touch LCD can switch Wi-Fi back on, so the other builds ignore
+ * a saved "off" (they would be left without any way in). */
+#if FPV_LCD
+static const bool WIFI_SWITCHABLE = LCD_HAS_TOUCH;
+#else
+static const bool WIFI_SWITCHABLE = false;
+#endif
 static struct {
     int mode = 0;  /* 0: host, 1: client first */
     int wait = 30; /* seconds: 15, 30 or 60 */
     char ssid[33] = "", pass[65] = "";               /* client: the network joined */
     char ap_ssid[33] = AP_SSID, ap_pass[65] = AP_PASSWORD; /* host: the own access point */
-    WifiState state = WIFI_HOST;
+    WifiState state = NET_HOST;
     bool fallback;      /* host because the client connection failed */
+    bool on = true;     /* Wi-Fi switched on (the touch LCD can switch it off) */
+    bool save_on;       /* `on` changed: save it (done by loop()) */
     bool restart;       /* apply the settings (set by the web task) */
     bool lost;          /* client: connection lost since `since` */
     uint32_t since;     /* client: connecting / lost since */
@@ -134,6 +144,7 @@ static void load_settings() {
     c.lcd_panel = prefs.getInt("lpanel", c.lcd_panel);
     c.lcd_land = prefs.getBool("lland", c.lcd_land);
     c.lcd_flip = prefs.getBool("lflip", c.lcd_flip);
+    wifi.on = !WIFI_SWITCHABLE || prefs.getBool("won", true);
     wifi.mode = prefs.getInt("wmode", wifi.mode);
     wifi.wait = prefs.getInt("wwait", wifi.wait);
     prefs.getString("wssid", wifi.ssid, sizeof(wifi.ssid));
@@ -504,7 +515,7 @@ static void handle_wifi(const char *text) {
     bool host_changed = strcmp(field[6], wifi.ap_ssid) || strcmp(ap_pass, wifi.ap_pass);
     bool restart = mode != wifi.mode || strcmp(field[3], wifi.ssid) || strcmp(pass, wifi.pass) ||
                    (wifi.fallback && mode == 1) || /* try the network again */
-                   (host_changed && wifi.state == WIFI_HOST);
+                   (host_changed && wifi.state == NET_HOST);
     wifi.mode = mode;
     wifi.wait = wait;
     strlcpy(wifi.ssid, field[3], sizeof(wifi.ssid));
@@ -654,6 +665,34 @@ SweepConfig shared_config() {
     return c;
 }
 
+WifiInfo shared_wifi() {
+    WifiInfo w;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    w.on = wifi.on;
+    w.state = wifi.state;
+    w.fallback = wifi.fallback;
+    w.reason = wifi.reason;
+    w.mode = wifi.mode;
+    w.wait = wifi.wait;
+    strlcpy(w.ip, wifi.ip, sizeof(w.ip));
+    strlcpy(w.ssid, wifi.ssid, sizeof(w.ssid));
+    strlcpy(w.pass, wifi.pass, sizeof(w.pass));
+    strlcpy(w.ap_ssid, wifi.ap_ssid, sizeof(w.ap_ssid));
+    strlcpy(w.ap_pass, wifi.ap_pass, sizeof(w.ap_pass));
+    xSemaphoreGive(lock);
+    return w;
+}
+
+void shared_set_wifi_on(bool on) {
+    if (!WIFI_SWITCHABLE) return;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    if (on != wifi.on) {
+        wifi.on = on;
+        wifi.save_on = wifi.restart = true;
+    }
+    xSemaphoreGive(lock);
+}
+
 SweepStatus shared_status() {
     SweepStatus s;
     xSemaphoreTake(lock, portMAX_DELAY);
@@ -739,7 +778,7 @@ static void start_host(bool fallback) {
     radio_2g_only();
     WiFi.softAP(wifi.ap_ssid, wifi.ap_pass, AP_CHANNEL, 0, AP_MAX_CLIENTS);
     WiFi.setSleep(false);
-    set_wifi_state(WIFI_HOST, fallback, WiFi.softAPIP().toString().c_str());
+    set_wifi_state(NET_HOST, fallback, WiFi.softAPIP().toString().c_str());
 }
 
 static void start_client() {
@@ -752,7 +791,7 @@ static void start_client() {
     WiFi.begin(wifi.ssid, wifi.pass[0] ? wifi.pass : nullptr);
     wifi.since = millis();
     wifi.lost = false;
-    set_wifi_state(WIFI_CONNECTING, false, "");
+    set_wifi_state(NET_CONNECTING, false, "");
 }
 
 /* Why the last client connection attempt failed, shown on the page. */
@@ -760,31 +799,41 @@ static void on_wifi_event(arduino_event_id_t event, arduino_event_info_t info) {
     if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) wifi.reason = info.wifi_sta_disconnected.reason;
 }
 
+static void stop_wifi() {
+    MDNS.end();
+    WiFi.setAutoReconnect(false);
+    if (WiFi.getMode() & WIFI_MODE_STA) WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    set_wifi_state(NET_OFF, false, "");
+}
+
 static void start_wifi() {
-    if (wifi.mode == 1 && wifi.ssid[0]) start_client();
+    if (!wifi.on) stop_wifi();
+    else if (wifi.mode == 1 && wifi.ssid[0]) start_client();
     else start_host(false);
 }
 
 static void poll_wifi() {
     xSemaphoreTake(lock, portMAX_DELAY);
-    bool restart = wifi.restart;
-    wifi.restart = false;
+    bool restart = wifi.restart, save_on = wifi.save_on;
+    wifi.restart = wifi.save_on = false;
     xSemaphoreGive(lock);
+    if (save_on) prefs.putBool("won", wifi.on);
     if (restart) {
         start_wifi();
         return;
     }
     uint32_t now = millis(), limit = (uint32_t)wifi.wait * 1000;
     bool up = WiFi.status() == WL_CONNECTED;
-    if (wifi.state == WIFI_CONNECTING) {
+    if (wifi.state == NET_CONNECTING) {
         if (up) {
             MDNS.begin(MDNS_NAME);
             MDNS.addService("http", "tcp", 80);
-            set_wifi_state(WIFI_CLIENT, false, WiFi.localIP().toString().c_str());
+            set_wifi_state(NET_CLIENT, false, WiFi.localIP().toString().c_str());
         } else if (now - wifi.since >= limit) {
             start_host(true);
         }
-    } else if (wifi.state == WIFI_CLIENT) {
+    } else if (wifi.state == NET_CLIENT) {
         if (!up && !wifi.lost) {
             wifi.lost = true;
             wifi.since = now;
@@ -792,7 +841,7 @@ static void poll_wifi() {
             start_host(true);
         } else if (up && wifi.lost) {
             wifi.lost = false;
-            set_wifi_state(WIFI_CLIENT, false, WiFi.localIP().toString().c_str());
+            set_wifi_state(NET_CLIENT, false, WiFi.localIP().toString().c_str());
         }
     }
 }

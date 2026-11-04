@@ -149,7 +149,7 @@ unsigned shown_rate = ~0u;
 bool shown_det;
 int shown_gain = -2;
 
-enum Screen { MAIN, SETTINGS, ADVANCED, RECEIVER } screen = MAIN;
+enum Screen { MAIN, SETTINGS, ADVANCED, RECEIVER, WIFI } screen = MAIN;
 int active = -1;      /* selected marker, -1 = none (as at start-up) */
 int battery = -1;     /* percent, -1 = unknown */
 bool dragging;
@@ -456,11 +456,13 @@ void set_settings_layout(bool land) {
 }
 int row_y(int r) { return SY + r * SROW; }
 int row_text_y(int r) { return row_y(r) + (BH - 16) / 2; }
-/* title row: [受信] [詳細] [戻る] from the right */
-Rect title_button(int i) { return {scr_w - 72 - i * 76, 0, 72, 34}; }
+/* title row: [Wi-Fi] [受信] [詳細] [戻る] from the right, room for four */
+int title_w() { return min(72, (scr_w - 3 * 4) / 4); }
+Rect title_button(int i) { return {scr_w - title_w() - i * (title_w() + 4), 0, title_w(), 34}; }
 #define BTN_BACK title_button(0)
 #define BTN_ADVANCED title_button(1)
 #define BTN_RECEIVER title_button(2)
+#define BTN_WIFI title_button(3)
 /* columns i .. j - 1 of n equal columns (2 px gaps) in row r */
 Rect cell(int r, int i, int j, int n) {
     int x0 = scr_w - AREA, xa = x0 + i * (AREA + 2) / n, xb = x0 + j * (AREA + 2) / n - 2;
@@ -490,10 +492,11 @@ void four(int r, const char *const l[4]) {
 
 void draw_title(const char *title, int buttons) {
     /* the title only where the buttons leave room (not on 240 px with three) */
-    if (scr_w - buttons * 76 >= 72) text(4, 9, title, WHITE);
+    if (scr_w - buttons * (title_w() + 4) >= 72) text(4, 9, title, WHITE);
     button(BTN_BACK, "戻る");
     if (buttons > 1) button(BTN_ADVANCED, "詳細");
     if (buttons > 2) button(BTN_RECEIVER, "受信");
+    if (buttons > 3) button(BTN_WIFI, "Wi-Fi");
 }
 
 /* ---- settings (first page): span, gain, bands, noise reference ----
@@ -505,7 +508,7 @@ const char *const MHZ_STEP[4] = {"-10", "-1", "+1", "+10"};
 
 void draw_settings() {
     char s[32];
-    draw_title("設定", 3);
+    draw_title("設定", 4);
     snprintf(s, sizeof(s), "%u-%u", cfg.start_mhz, cfg.stop_mhz);
     label(0, "スパン", s);
     for (int i = 0; i < 2; i++)
@@ -596,7 +599,10 @@ void draw_advanced() {
     button(half(4, 1), "+1秒");
     /* Wi-Fi state (set on the web page): where to find the page */
     /* (yellow: host because the client connection failed) */
-    const char *mode = st.wifi_state == 1 ? "接続中…" : st.wifi_state == 2 ? "クライアント" : "ホスト";
+    const char *mode = st.wifi_state == 3   ? "OFF"
+                       : st.wifi_state == 1 ? "接続中…"
+                       : st.wifi_state == 2 ? "クライアント"
+                                            : "ホスト";
     uint16_t c = st.wifi_fallback ? YELLOW : GRAY;
     snprintf(s, sizeof(s), "Wi-Fi: %s", mode);
     if (landscape) { /* one line */
@@ -606,6 +612,79 @@ void draw_advanced() {
         text(0, row_y(5) + 1, s, c);
         text(56, row_y(5) + BH - 17, st.wifi_ip, c);
     }
+}
+
+/* ---- Wi-Fi screen: on / off, and the settings made on the web page
+ * (mode, the host's and the joined network's names and passwords) ---- */
+WifiInfo wi;
+
+/* Text wrapped at max_w pixels; returns the y below it. */
+int text_wrap(int x, int y, int max_w, const char *s, uint16_t c, int line_h) {
+    char line[80];
+    while (*s) {
+        size_t n = 0;
+        int w = 0;
+        const char *p = s;
+        while (*p) {
+            const char *q = p;
+            int gw = glyph(next_code(q))->width;
+            if (w + gw > max_w && n) break;
+            if (n + (q - p) >= sizeof(line)) break;
+            memcpy(line + n, p, q - p);
+            n += q - p;
+            w += gw;
+            p = q;
+        }
+        line[n] = '\0';
+        text(x, y, line, c);
+        y += line_h;
+        s = p;
+    }
+    return y;
+}
+
+void draw_wifi() {
+    char s[48];
+    draw_title("Wi-Fi設定", 1);
+    label(0, "Wi-Fi");
+    button(half(0, 0), "ON", wi.on);
+    button(half(0, 1), "OFF", !wi.on);
+    const int LH = landscape ? 18 : 20, VX = landscape ? 96 : 92, VW = scr_w - VX;
+    int y = row_y(1);
+    /* state and the page's address */
+    if (!wi.on) strcpy(s, "OFF");
+    else if (wi.state == 1) strcpy(s, "接続中…");
+    else if (wi.state == 2) strcpy(s, "クライアント");
+    else strcpy(s, wi.fallback ? "ホスト（接続失敗）" : "ホスト");
+    text(0, y, "状態", GRAY);
+    y = text_wrap(VX, y, VW, s, !wi.on ? RED : wi.fallback ? YELLOW : GREEN, LH);
+    if (wi.on && wi.ip[0]) {
+        text(0, y, "アドレス", GRAY);
+        y = text_wrap(VX, y, VW, wi.ip, WHITE, LH);
+    }
+    if (wi.mode == 1) snprintf(s, sizeof(s), "クライアント %d秒", wi.wait);
+    else strcpy(s, "ホスト");
+    text(0, y, "モード", GRAY);
+    y = text_wrap(VX, y, VW, s, WHITE, LH);
+    /* the host (own access point) and the network joined in client mode */
+    text(0, y, "ホスト", BLUE);
+    y += LH;
+    text(4, y, "SSID", GRAY);
+    y = text_wrap(VX, y, VW, wi.ap_ssid, WHITE, LH);
+    text(4, y, "パスワード", GRAY);
+    y = text_wrap(VX, y, VW, wi.ap_pass, WHITE, LH);
+    text(0, y, "接続先", BLUE);
+    y += LH;
+    text(4, y, "SSID", GRAY);
+    y = text_wrap(VX, y, VW, wi.ssid[0] ? wi.ssid : "未設定", WHITE, LH);
+    text(4, y, "パスワード", GRAY);
+    text_wrap(VX, y, VW, wi.pass[0] ? wi.pass : "なし", WHITE, LH);
+}
+
+void press_wifi(int x, int y) {
+    if (BTN_BACK.in(x, y)) screen = SETTINGS;
+    else if (half(0, 0).in(x, y)) shared_set_wifi_on(true);
+    else if (half(0, 1).in(x, y)) shared_set_wifi_on(false);
 }
 
 /* ---- touch ---- */
@@ -738,6 +817,7 @@ void press_settings(int x, int y) {
     if (BTN_BACK.in(x, y)) screen = MAIN;
     else if (BTN_ADVANCED.in(x, y)) screen = ADVANCED;
     else if (BTN_RECEIVER.in(x, y)) screen = RECEIVER;
+    else if (BTN_WIFI.in(x, y)) screen = WIFI;
     else if (half(0, 0).in(x, y)) set_span(PRESET[0][0], PRESET[0][1]);
     else if (half(0, 1).in(x, y)) set_span(PRESET[1][0], PRESET[1][1]);
     else if (half(5, 1).in(x, y)) shared_clear_noise();
@@ -816,6 +896,7 @@ void render() {
         set_layout(land);
     }
     st = shared_status();
+    if (screen == WIFI) wi = shared_wifi();
     has_noise = shared_noise(noise);
     /* Peak and average restart when the receiver settings change (as on the
      * page) and the peak restarts when peak hold is switched on. */
@@ -841,6 +922,7 @@ void render() {
         if (screen == MAIN) draw_main();
         else if (screen == SETTINGS) draw_settings();
         else if (screen == RECEIVER) draw_receiver();
+        else if (screen == WIFI) draw_wifi();
         else draw_advanced();
         lcd_push_rows(strip_y, min(STRIP, scr_h - strip_y), scr_w, buf);
         poll_touch();
@@ -1008,6 +1090,7 @@ void lcd_task(void *) {
                 if (screen == MAIN) press_main(touch.x, touch.y);
                 else if (screen == SETTINGS) press_settings(touch.x, touch.y);
                 else if (screen == RECEIVER) press_receiver(touch.x, touch.y);
+                else if (screen == WIFI) press_wifi(touch.x, touch.y);
                 else press_advanced(touch.x, touch.y);
                 cfg = shared_config(); /* a changed brightness applies at once */
             }
