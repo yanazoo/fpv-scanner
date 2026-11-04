@@ -71,8 +71,11 @@ td.ch{cursor:pointer}#mt td:first-child,#mt th:first-child{width:1%;white-space:
  <label>待ち時間 <select id="wwait"><option value="15">15秒</option><option value="30">30秒</option><option value="60">60秒</option></select></label>
  <label>接続先 <input id="wssid" maxlength="32" placeholder="SSID" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
  <label>パスワード <input type="password" id="wpass" maxlength="63" placeholder="変更しないときは空欄" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+ <label><input type="checkbox" id="wshow">パスワードを表示</label>
  <button id="applyw">適用</button>
-</div><div class="row" id="wst" style="font-size:12px;color:#8b949e"></div></div>
+</div>
+<div id="wsaved" style="font-size:13px;margin-top:4px"></div>
+<div id="wst" style="font-size:13px;margin-top:2px"></div></div>
 
 </main>
 <script>
@@ -137,9 +140,14 @@ $('applyw').onclick=()=>{const m=$('wmode').value,ssid=$('wssid').value.trim(),p
  const keep=!pw&&ssid===(cfg.wssid??'')?1:0;
  if((m!==String(cfg.wmode)||ssid!==cfg.wssid||pw)&&!confirm('Wi-Fiを切り替えます。この画面の接続はいったん切れます。'))return;
  if(send(['wifi',m,$('wwait').value,ssid,pw,keep].join('\n'))){$('applyw').classList.remove('dirty');$('wpass').value=''}};
-function wifiState(s){const st=s.wstate??0;
- $('wst').textContent=st===1?`クライアント: ${s.wssid} に接続中…`:st===2?`クライアント: ${s.wssid} に接続中（http://${s.wip}/ または http://${s.mdns}.local/）`:
-  `ホスト: SSID ${s.ap}（http://${s.wip}/）`+(s.wfb?' ※接続先につながらなかったためホストで起動':'');
+$('wshow').onchange=()=>$('wpass').type=$('wshow').checked?'text':'password';
+// Saved settings (what the next start uses) and the current state, always shown.
+function wifiState(s){const st=s.wstate??0,cl=+s.wmode===1;
+ $('wsaved').textContent='保存中の設定: '+(cl?`クライアント（接続先 ${s.wssid||'未設定'}、パスワード ${s.wpass?'保存済み':'なし'}、つながらないとき ${s.wwait}秒でホスト）`:
+  `ホスト（SSID ${s.ap}）`);
+ $('wst').textContent='現在の状態: '+(st===1?`${s.wssid} に接続中…`:st===2?`クライアントで ${s.wssid} に接続中 → http://${s.wip}/ または http://${s.mdns}.local/`:
+  `ホスト（SSID ${s.ap}） → http://${s.wip}/`+(s.wfb?' ※接続先につながらなかったためホストで起動中':''));
+ $('wst').style.color=s.wfb?'#f2cc60':'#3fb950';
  if(!$('applyw').classList.contains('dirty')){$('wmode').value=s.wmode;$('wwait').value=s.wwait;$('wssid').value=s.wssid;
   $('wpass').placeholder=s.wpass?'変更しないときは空欄':'なし（オープン）'}}
 // Display settings take effect at once; the S3 saves them after typing pauses.

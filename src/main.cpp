@@ -44,7 +44,32 @@ static double half_use_khz(unsigned plan) {
     return steps_plan[plan].half_khz;
 }
 
-static WebSocketsServer ws(81);
+/* The pages' WebSocket server, with a check that a page's socket takes
+ * data without blocking: WiFiClient::write() waits up to 10 s for a page
+ * that stopped reading (a phone switching networks, asleep or gone), which
+ * held up every other page, and the library has no way around it. */
+class PageServer : public WebSocketsServer {
+  public:
+    using WebSocketsServer::WebSocketsServer;
+    /* lwIP reports a socket writable only with about 2.9 KB of its send
+     * buffer free (TCP_SNDLOWAT): more than a frame or a status line. */
+    bool writable(uint8_t i) {
+        WiFiClient *t = _clients[i].tcp;
+        int fd = t ? t->fd() : -1;
+        if (fd < 0) return false;
+        fd_set set;
+        FD_ZERO(&set);
+        FD_SET(fd, &set);
+        timeval tv = {0, 0};
+        return select(fd + 1, nullptr, &set, nullptr, &tv) > 0;
+    }
+    /* Closes the connection without writing to it (the library's disconnect
+     * sends a close frame, which may block); the library then reports it. */
+    void drop(uint8_t i) {
+        if (_clients[i].tcp) _clients[i].tcp->stop();
+    }
+};
+static PageServer ws(81);
 static DNSServer dns;
 static SdrLink sdr;
 static SemaphoreHandle_t lock;
@@ -489,7 +514,10 @@ static uint8_t noise_request[FRAME_SIZE];
 static bool noise_store_requested, noise_clear_requested;
 
 static void on_ws(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
-    if (type == WStype_CONNECTED) {
+    if (type == WStype_DISCONNECTED) {
+        Serial.printf("[%lu ms] page %u disconnected\n", millis(), client);
+    } else if (type == WStype_CONNECTED) {
+        Serial.printf("[%lu ms] page %u connected\n", millis(), client);
         /* A (re)connecting page gets the latest sweep at once. */
         static uint8_t latest[sizeof(frame)];
         xSemaphoreTake(lock, portMAX_DELAY);
@@ -515,18 +543,30 @@ static void on_ws(uint8_t client, WStype_t type, uint8_t *payload, size_t length
     }
 }
 
-/* Sends to every page in turn. A page that cannot take the data within
- * WEBSOCKETS_TCP_TIMEOUT (a phone that went away or is still joining) is
- * dropped, so it never holds up the others: the library waits for it in a
- * busy loop. The page reconnects by itself. */
+/* Sends to every page whose socket takes it now; a page that is not ready
+ * misses this frame. A page that stays stuck for 2 s is dropped without
+ * waiting for it (it reconnects by itself), so one slow phone or PC never
+ * holds up the others, the LCD or the sweep. */
+static uint32_t stuck_since[WEBSOCKETS_SERVER_CLIENT_MAX];
 static void send_all(bool binary, const void *data, size_t size) {
+    uint32_t now = millis();
     for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; i++) {
-        if (!ws.clientIsConnected(i)) continue;
-        bool ok = binary ? ws.sendBIN(i, (const uint8_t *)data, size) : ws.sendTXT(i, (const char *)data, size);
-        if (!ok) {
-            Serial.printf("[%lu ms] page %u too slow, dropped\n", millis(), i);
-            ws.disconnect(i);
+        if (!ws.clientIsConnected(i)) {
+            stuck_since[i] = 0;
+            continue;
         }
+        if (!ws.writable(i)) {
+            if (!stuck_since[i]) stuck_since[i] = now | 1;
+            else if (now - stuck_since[i] > 2000) {
+                Serial.printf("[%lu ms] page %u not reading, dropped\n", now, i);
+                ws.drop(i);
+                stuck_since[i] = 0;
+            }
+            continue;
+        }
+        stuck_since[i] = 0;
+        if (binary) ws.sendBIN(i, (const uint8_t *)data, size);
+        else ws.sendTXT(i, (const char *)data, size);
     }
 }
 
@@ -746,9 +786,9 @@ void setup() {
     portal_http_begin(INDEX_HTML);
     ws.begin();
     ws.onEvent(on_ws);
-    /* Drop phones that went silent (sleep, out of range) instead of
-     * queueing frames to a dead connection. */
-    ws.enableHeartbeat(3000, 2000, 2);
+    /* No library heartbeat: its pings could block on a stuck page. Pages
+     * that stop reading are dropped by send_all(); a page reconnects after
+     * 5 s without data. */
     sdr.begin(SDR_RX_PIN, SDR_TX_PIN, SDR_BAUD);
     /* The ESP32-C5 (LCD build) has a single core. */
     const BaseType_t web_core = portNUM_PROCESSORS > 1 ? 1 : 0;
