@@ -124,7 +124,7 @@ function renderFpv(){$('fpv').innerHTML='<tr><th></th>'+[1,2,3,4,5,6,7,8].map(c=
 function placed(){renderFpv();redraw();const s=(cfg.markers||[]).map(t=>t<0?null:t/10);$('msave').classList.toggle('dirty',markers.some((f,m)=>f!==(s[m]??null)))}
 // ---- settings: forms are filled from the saved values once, then edited until applied
 function fillForm(s){$('start').value=s.start;$('stop').value=s.stop;$('rate').value=s.rate;$('dwell').value=s.dwell;$('det').value=s.det;
- $('gain').value=s.gain;$('cal').value=(s.cal/10).toFixed(1);$('warnd').value=s.warn??-15;$('hold').checked=!!s.hold;$('avg').checked=!!s.avg;$('ytop').value=s.ytop;$('yrng').value=s.yrange;
+ $('gain').value=s.gain;$('cal').value=(s.cal/10).toFixed(1);$('warnd').value=s.warn??-5;$('hold').checked=!!s.hold;$('avg').checked=!!s.avg;$('ytop').value=s.ytop;$('yrng').value=s.yrange;
  document.querySelectorAll('#bandsel input').forEach(i=>i.checked=shown(i.dataset.b));markers=s.markers.map(t=>t<0?null:t/10);placed()}
 // Not connected: nothing is sent and the apply button stays marked (the header shows the connection).
 function send(t){if(ws&&ws.readyState===1){ws.send(t);return true}return false}
@@ -220,7 +220,7 @@ function onFrame(buf){const v=new DataView(buf),magic=v.getUint32(0,true),a=v.ge
  if(a!==f0||b!==f1||!data||data.length!==t.length){f0=a;f1=b;peak=null;avg=null}
  data=Uint8Array.from(t);peak=peak?peak.map((p,i)=>Math.max(p,t[i])):Uint8Array.from(t);avg=avg?avg.map((p,i)=>!t[i]?p:!p?t[i]:p*0.8+t[i]*0.2):Float32Array.from(t);
  // Saturation hint: the strongest point above the set dBFS (cfg.warn).
- const w=Math.max(...t)/2-84.3>(cfg.warn??-15)?'ゲイン下げて':'';if(w!==warn){warn=w;showErr()}redraw()}
+ const w=Math.max(...t)/2-84.3>(cfg.warn??-5)?'ゲイン下げて':'';if(w!==warn){warn=w;showErr()}redraw()}
 function connect(){ws=new WebSocket('ws://'+location.hostname+':81/');ws.binaryType='arraybuffer';lastMsg=Date.now();
  ws.onmessage=e=>{lastMsg=Date.now();if(typeof e.data!=='string')return onFrame(e.data);const j=JSON.parse(e.data);j.type==='wifipass'?showPass(j):onStatus(j)};
  ws.onclose=()=>{$('st').textContent='再接続中';$('st').className='ng';setTimeout(connect,1000)}}
