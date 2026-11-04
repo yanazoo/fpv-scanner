@@ -38,6 +38,9 @@ struct SweepStatus {
     unsigned steps, sweep_ms, tune_ms, measure_ms;
     unsigned gain_max; /* highest manual gain the C5 accepts, 0 = not known yet */
     char error[64];
+    int wifi_state;     /* 0: host (access point), 1: connecting, 2: client */
+    bool wifi_fallback; /* host because the client connection failed */
+    char wifi_ip[16];   /* the page's address ("" while connecting) */
 };
 
 SweepConfig shared_config();
@@ -52,5 +55,18 @@ void shared_apply(const char *text);
 /* Saves (NSE2 frame) or clears the noise reference; done by the web task. */
 void shared_store_noise(const uint8_t *frame);
 void shared_clear_noise();
+/* Wi-Fi settings and state, for the LCD's Wi-Fi screen (passwords included:
+ * the screen shows them). */
+struct WifiInfo {
+    bool on;       /* Wi-Fi switched on */
+    int state;     /* 0: host, 1: connecting, 2: client, 3: off */
+    bool fallback; /* host because the client connection failed */
+    unsigned reason; /* why the client connection failed (Wi-Fi reason code), 0 = none */
+    int mode, wait; /* 0: host, 1: client first; seconds before falling back */
+    char ip[16], ssid[33], pass[65], ap_ssid[33], ap_pass[65];
+};
+WifiInfo shared_wifi();
+/* Switches Wi-Fi on or off (saved); used by the touch LCD. */
+void shared_set_wifi_on(bool on);
 /* Battery level in percent from the LCD board, -1 when unknown. */
 void shared_set_battery(int percent);

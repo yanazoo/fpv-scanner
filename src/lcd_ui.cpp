@@ -5,7 +5,8 @@
  * table (level, channel, frequency) and buttons. Tapping or dragging on
  * the graph moves the selected marker (snapping to a shown FPV channel);
  * tapping a table row selects the marker.
- * Settings: the page's display settings and the noise reference.
+ * Settings: span, gain, bands and the noise reference; the receiver and
+ * advanced pages hold the rest.
  *
  * Settings go through the same "cfg ..." lines as the web page, so the
  * screen and the page stay in step and both are saved. Peak hold and the
@@ -15,7 +16,6 @@
  * STRIP rows: the whole scene is drawn into each strip, clipped. */
 #include "lcd_ui.h"
 #include <Arduino.h>
-#include <esp_system.h>
 #include "lcd_board.h"
 #include "lcd_font.h"
 #include "shared.h"
@@ -149,7 +149,7 @@ unsigned shown_rate = ~0u;
 bool shown_det;
 int shown_gain = -2;
 
-enum Screen { MAIN, SETTINGS, ADVANCED, RECEIVER } screen = MAIN;
+enum Screen { MAIN, SETTINGS, ADVANCED, RECEIVER, WIFI } screen = MAIN;
 int active = -1;      /* selected marker, -1 = none (as at start-up) */
 int battery = -1;     /* percent, -1 = unknown */
 bool dragging;
@@ -444,141 +444,127 @@ void draw_main() {
 }
 
 /* ---- settings screens (settings, receiver, advanced) ----
- * They follow the main screen's orientation. Rows are SROW apart from SY;
- * the controls of a row are aligned to the right edge, the label is on the
- * left. */
-int SY = 40, SROW = 44, BH = 36; /* portrait until set_settings_layout() */
+ * They follow the main screen's orientation. Rows are SROW apart from SY.
+ * The label is on the left with the row's value (portrait: below the label,
+ * landscape: beside it); the buttons are on a grid of four columns at the
+ * right edge (pairs take two columns each, the band row five equal cells),
+ * so the buttons of all rows line up. */
+int SY = 40, SROW = 44, BH = 36, AREA = 158; /* portrait until set_settings_layout() */
 void set_settings_layout(bool land) {
-    if (land) SY = 36, SROW = 34, BH = 30; /* 320x240 */
-    else SY = 40, SROW = 44, BH = 36;      /* 240x320 */
+    if (land) SY = 36, SROW = 34, BH = 30, AREA = 162; /* 320x240 */
+    else SY = 40, SROW = 44, BH = 36, AREA = 158;      /* 240x320 */
 }
 int row_y(int r) { return SY + r * SROW; }
 int row_text_y(int r) { return row_y(r) + (BH - 16) / 2; }
-/* title row: [受信] [詳細] [戻る] from the right */
-Rect title_button(int i) { return {scr_w - 72 - i * 76, 0, 72, 34}; }
+/* title row: [Wi-Fi] [受信] [詳細] [戻る] from the right, room for four */
+int title_w() { return min(72, (scr_w - 3 * 4) / 4); }
+Rect title_button(int i) { return {scr_w - title_w() - i * (title_w() + 4), 0, title_w(), 34}; }
 #define BTN_BACK title_button(0)
 #define BTN_ADVANCED title_button(1)
 #define BTN_RECEIVER title_button(2)
-/* two buttons on the right of row r */
-Rect pair_button(int r, int i) { return {scr_w - 144 + i * 76, row_y(r), 68, BH}; }
-/* -/+ rows: [b0][b1] value [b2][b3] on the right; value centred */
-const int STEP_W = 32, VALUE_W = 52;
-Rect step_button(int r, int i) {
-    int x0 = scr_w - (4 * STEP_W + VALUE_W + 4 * 2);
-    return {x0 + i * (STEP_W + 2) + (i >= 2 ? VALUE_W + 2 : 0), row_y(r), STEP_W, BH};
+#define BTN_WIFI title_button(3)
+/* columns i .. j - 1 of n equal columns (2 px gaps) in row r */
+Rect cell(int r, int i, int j, int n) {
+    int x0 = scr_w - AREA, xa = x0 + i * (AREA + 2) / n, xb = x0 + j * (AREA + 2) / n - 2;
+    return {xa, row_y(r), xb - xa, BH};
 }
-int value_x() { return scr_w - (2 * STEP_W + VALUE_W / 2 + 2 * 2) - 2; }
-/* -/+ rows with one step: [-] value [+] */
-Rect minus_button(int r) { return {scr_w - 184, row_y(r), 48, BH}; }
-Rect plus_button(int r) { return {scr_w - 48, row_y(r), 48, BH}; }
-int pm_value_x() { return scr_w - 92; }
-Rect band_button(int b) { return {scr_w - 180 + b * 36, row_y(3), 34, BH}; }
+Rect col(int r, int i) { return cell(r, i, i + 1, 4); }       /* one of four columns */
+Rect half(int r, int i) { return cell(r, 2 * i, 2 * i + 2, 4); } /* left or right pair */
+Rect band_button(int b) { return cell(4, b, b + 1, 5); }
+
+/* row label and its value (none: nullptr) */
+void label(int r, const char *name, const char *value = nullptr, uint16_t vc = BLUE) {
+    int vx = scr_w - AREA - 6; /* values right-aligned before the buttons */
+    if (!value) {
+        text(0, row_text_y(r), name, WHITE);
+    } else if (landscape) {
+        text(0, row_text_y(r), name, WHITE);
+        text_right(vx, row_text_y(r), value, vc);
+    } else {
+        text(0, row_y(r) + 1, name, WHITE);
+        text_right(vx, row_y(r) + BH - 17, value, vc);
+    }
+}
+/* four buttons in a row: [l0][l1][l2][l3] */
+void four(int r, const char *const l[4]) {
+    for (int i = 0; i < 4; i++) button(col(r, i), l[i]);
+}
 
 void draw_title(const char *title, int buttons) {
     /* the title only where the buttons leave room (not on 240 px with three) */
-    if (scr_w - buttons * 76 >= 72) text(4, 9, title, WHITE);
+    if (scr_w - buttons * (title_w() + 4) >= 72) text(4, 9, title, WHITE);
     button(BTN_BACK, "戻る");
     if (buttons > 1) button(BTN_ADVANCED, "詳細");
     if (buttons > 2) button(BTN_RECEIVER, "受信");
+    if (buttons > 3) button(BTN_WIFI, "Wi-Fi");
 }
 
+/* ---- settings (first page): span, gain, bands, noise reference ----
+ * Each change goes through the same "cfg" lines as the page's apply buttons:
+ * it is saved and restarts the sweep where needed. */
+const unsigned PRESET[2][2] = {{5650, 5850}, {5640, 5950}};
+const char *const PRESET_NAME[2] = {"5650-5850", "5640-5950"};
+const char *const MHZ_STEP[4] = {"-10", "-1", "+1", "+10"};
+
 void draw_settings() {
-    char s[48];
-    draw_title("表示設定", 3);
-    /* moves the selected marker to the strongest point */
-    text(0, row_text_y(0), "マーカー", WHITE);
-    if (active >= 0) snprintf(s, sizeof(s), "M%dをピークへ", active + 1);
-    else strcpy(s, "未選択");
-    button({scr_w - 144, row_y(0), 144, BH}, s);
-    text(0, row_text_y(1), "上限", WHITE);
-    button(minus_button(1), "-5");
-    snprintf(s, sizeof(s), "%ddBm", cfg.ytop);
-    text_center(pm_value_x(), row_text_y(1), s, WHITE);
-    button(plus_button(1), "+5");
-    text(0, row_text_y(2), "範囲", WHITE);
-    button(minus_button(2), "-5");
-    snprintf(s, sizeof(s), "%ddB", cfg.yrange);
-    text_center(pm_value_x(), row_text_y(2), s, WHITE);
-    button(plus_button(2), "+5");
-    text(0, row_text_y(3), "バンド", WHITE);
+    char s[32];
+    draw_title("設定", 4);
+    snprintf(s, sizeof(s), "%u-%u", cfg.start_mhz, cfg.stop_mhz);
+    label(0, "スパン", s);
+    for (int i = 0; i < 2; i++)
+        button(half(0, i), PRESET_NAME[i], cfg.start_mhz == PRESET[i][0] && cfg.stop_mhz == PRESET[i][1]);
+    snprintf(s, sizeof(s), "%u", cfg.start_mhz);
+    label(1, "開始", s);
+    four(1, MHZ_STEP);
+    snprintf(s, sizeof(s), "%u", cfg.stop_mhz);
+    label(2, "終了", s);
+    four(2, MHZ_STEP);
+    if (cfg.gain < 0) strcpy(s, "自動");
+    else snprintf(s, sizeof(s), "%d", cfg.gain);
+    label(3, "ゲイン", s);
+    static const char *const GAIN_STEP[4] = {"-10", "-1", "+1", "+10"};
+    four(3, GAIN_STEP);
+    label(4, "バンド");
     for (int b = 0; b < 5; b++) {
         char name[2] = {BAND_NAME[b], 0};
         button(band_button(b), name, cfg.bands >> b & 1);
     }
-    text(0, row_text_y(4), "ノイズ基準", WHITE);
-    button(pair_button(4, 0), "保存");
-    button(pair_button(4, 1), "消去");
-    if (landscape) {
-        /* no room for a line of its own: the state between label and buttons */
-        text(84, row_text_y(4), has_noise ? "保存済み" : "未保存", has_noise ? GREEN : GRAY);
-    } else {
-        if (has_noise)
-            snprintf(s, sizeof(s), "保存済み %u-%uMHz", (unsigned)(get32(noise + 4) / 1000),
-                     (unsigned)(get32(noise + 8) / 1000));
-        else
-            strcpy(s, "未保存（保存=今の平均線）");
-        text(0, row_y(5) - 2, s, has_noise ? GREEN : GRAY);
-    }
-    /* screen orientation (main and settings screens) */
-    int r5 = landscape ? row_y(5) : row_y(5) + 16;
-    text(0, r5 + (BH - 16) / 2, "画面の向き", WHITE);
-    button({scr_w - 144, r5, 68, BH}, "縦", !cfg.lcd_land);
-    button({scr_w - 68, r5, 68, BH}, "横", cfg.lcd_land);
+    label(5, "ノイズ基準", has_noise ? "保存済み" : "未保存", has_noise ? GREEN : GRAY);
+    button(half(5, 0), "保存");
+    button(half(5, 1), "消去");
 }
-int orientation_row_y() { return landscape ? row_y(5) : row_y(5) + 16; }
 
-/* ---- receiver settings: step, gain, dwell, detector, calibration ----
- * Each change goes through the same "cfg" lines as the page's apply buttons:
- * it is saved and restarts the sweep (calibration only changes the display). */
+/* ---- receiver settings: step, dwell, detector, calibration, graph scale ---- */
 const char *const STEP_NAME[] = {"40", "30", "15", "7.5"};
-Rect rate_button(int i) { return {scr_w - 176 + i * 44, row_y(0), 42, BH}; }
 
 void draw_receiver() {
-    char s[64];
+    char s[32];
     draw_title("受信設定", 1);
-    text(0, row_text_y(0), "ステップ", WHITE);
-    for (int i = 0; i < 4; i++) button(rate_button(i), STEP_NAME[i], (int)cfg.rate_code == i);
-    text(0, row_text_y(1), "ゲイン", WHITE);
-    button(step_button(1, 0), "-10");
-    button(step_button(1, 1), "-1");
-    if (cfg.gain < 0) strcpy(s, "自動");
-    else snprintf(s, sizeof(s), "%d", cfg.gain);
-    text_center(value_x(), row_text_y(1), s, WHITE);
-    button(step_button(1, 2), "+1");
-    button(step_button(1, 3), "+10");
-    text(0, row_text_y(2), "滞在ms", WHITE);
-    button(step_button(2, 0), "-50");
-    button(step_button(2, 1), "-5");
+    label(0, "ステップ");
+    for (int i = 0; i < 4; i++) button(col(0, i), STEP_NAME[i], (int)cfg.rate_code == i);
     snprintf(s, sizeof(s), "%u", cfg.dwell_ms);
-    text_center(value_x(), row_text_y(2), s, WHITE);
-    button(step_button(2, 2), "+5");
-    button(step_button(2, 3), "+50");
-    text(0, row_text_y(3), "検波", WHITE);
-    button(pair_button(3, 0), "最大", cfg.max_hold);
-    button(pair_button(3, 1), "平均", !cfg.max_hold);
-    text(0, row_text_y(4), "補正dB", WHITE);
-    button(step_button(4, 0), "-5");
-    button(step_button(4, 1), "-.5");
+    label(1, "滞在ms", s);
+    static const char *const DWELL_STEP[4] = {"-50", "-5", "+5", "+50"};
+    four(1, DWELL_STEP);
+    label(2, "検波");
+    button(half(2, 0), "最大", cfg.max_hold);
+    button(half(2, 1), "平均", !cfg.max_hold);
     snprintf(s, sizeof(s), "%+.1f", cfg.cal_tenths / 10.0);
-    text_center(value_x(), row_text_y(4), s, WHITE);
-    button(step_button(4, 2), "+.5");
-    button(step_button(4, 3), "+5");
-    /* "ゲイン下げて" shows when the strongest point exceeds this (dBFS) */
-    text(0, row_text_y(5), "警告", WHITE);
-    button(step_button(5, 0), "-5");
-    button(step_button(5, 1), "-1");
-    snprintf(s, sizeof(s), "%d", cfg.warn_dbfs);
-    text_center(value_x(), row_text_y(5), s, WHITE);
-    button(step_button(5, 2), "+1");
-    button(step_button(5, 3), "+5");
-    if (!landscape) { /* no room for the notes in landscape */
-        if (st.gain_max) snprintf(s, sizeof(s), "ゲイン: 自動 または 2〜%u", st.gain_max);
-        else strcpy(s, "ゲイン: 自動 または 2〜");
-        text(0, row_y(6) - 4, s, GRAY);
-    }
+    label(3, "補正dB", s);
+    static const char *const CAL_STEP[4] = {"-5", "-.5", "+.5", "+5"};
+    four(3, CAL_STEP);
+    snprintf(s, sizeof(s), "%ddBm", cfg.ytop);
+    label(4, "上限", s);
+    button(half(4, 0), "-5");
+    button(half(4, 1), "+5");
+    snprintf(s, sizeof(s), "%ddB", cfg.yrange);
+    label(5, "範囲", s);
+    button(half(5, 0), "-5");
+    button(half(5, 1), "+5");
 }
 
-/* ---- advanced settings screen: brightness and power saving ---- */
+/* ---- advanced settings: orientation, warning, brightness, power saving,
+ * landscape button panel ---- */
 void sleep_text(int seconds, char *out, size_t size) {
     if (seconds <= 0) snprintf(out, size, "しない");
     else if (seconds < 60) snprintf(out, size, "%d秒", seconds);
@@ -589,28 +575,116 @@ void sleep_text(int seconds, char *out, size_t size) {
 void draw_advanced() {
     char s[32];
     draw_title("詳細設定", 1);
-    text(0, row_text_y(0), "明るさ", WHITE);
-    button(minus_button(0), "-10");
+    label(0, "画面の向き");
+    button(half(0, 0), "縦", !cfg.lcd_land);
+    button(half(0, 1), "横", cfg.lcd_land);
+    /* "ゲイン下げて" shows when the strongest point exceeds this (dBFS) */
+    snprintf(s, sizeof(s), "%ddBFS", cfg.warn_dbfs);
+    label(1, "警告", s);
+    static const char *const WARN_STEP[4] = {"-5", "-1", "+1", "+5"};
+    four(1, WARN_STEP);
     snprintf(s, sizeof(s), "%d%%", cfg.lcd_bright);
-    text_center(pm_value_x(), row_text_y(0), s, WHITE);
-    button(plus_button(0), "+10");
-    text(0, row_text_y(1), "省電力", WHITE);
-    button(minus_button(1), "-10秒");
+    label(2, "明るさ", s);
+    button(half(2, 0), "-10");
+    button(half(2, 1), "+10");
     sleep_text(cfg.lcd_sleep, s, sizeof(s));
-    text_center(pm_value_x(), row_text_y(1), s, WHITE);
-    button(plus_button(1), "+10秒");
-    button(minus_button(2), "-1分");
-    button(plus_button(2), "+1分");
+    label(3, "省電力", s);
+    static const char *const SLEEP_STEP[4] = {"-60", "-10", "+10", "+60"};
+    four(3, SLEEP_STEP);
     /* landscape button panel: seconds until it slides back by itself */
-    text(0, row_text_y(3), "ボタン", WHITE);
-    button(minus_button(3), "-1秒");
     if (cfg.lcd_panel > 0) snprintf(s, sizeof(s), "%d秒", cfg.lcd_panel);
     else strcpy(s, "押すまで");
-    text_center(pm_value_x(), row_text_y(3), s, WHITE);
-    button(plus_button(3), "+1秒");
-    static const char *const NOTES[] = {"省電力: 無操作で暗く→消灯", "タップで明るさが戻る",
-                                        "ボタン: 横画面の右のボタン", "が自動で戻るまでの秒数"};
-    for (int i = 0, y = row_y(4); i < 4 && y + 16 <= scr_h; i++, y += 16) text(0, y, NOTES[i], GRAY);
+    label(4, "ボタン", s);
+    button(half(4, 0), "-1秒");
+    button(half(4, 1), "+1秒");
+    /* Wi-Fi state (set on the web page): where to find the page */
+    /* (yellow: host because the client connection failed) */
+    const char *mode = st.wifi_state == 3   ? "OFF"
+                       : st.wifi_state == 1 ? "接続中…"
+                       : st.wifi_state == 2 ? "クライアント"
+                                            : "ホスト";
+    uint16_t c = st.wifi_fallback ? YELLOW : GRAY;
+    snprintf(s, sizeof(s), "Wi-Fi: %s", mode);
+    if (landscape) { /* one line */
+        int x = text(0, row_text_y(5), s, c);
+        text(x + 8, row_text_y(5), st.wifi_ip, c);
+    } else {
+        text(0, row_y(5) + 1, s, c);
+        text(56, row_y(5) + BH - 17, st.wifi_ip, c);
+    }
+}
+
+/* ---- Wi-Fi screen: on / off, and the settings made on the web page
+ * (mode, the host's and the joined network's names and passwords) ---- */
+WifiInfo wi;
+
+/* Text wrapped at max_w pixels; returns the y below it. */
+int text_wrap(int x, int y, int max_w, const char *s, uint16_t c, int line_h) {
+    char line[80];
+    while (*s) {
+        size_t n = 0;
+        int w = 0;
+        const char *p = s;
+        while (*p) {
+            const char *q = p;
+            int gw = glyph(next_code(q))->width;
+            if (w + gw > max_w && n) break;
+            if (n + (q - p) >= sizeof(line)) break;
+            memcpy(line + n, p, q - p);
+            n += q - p;
+            w += gw;
+            p = q;
+        }
+        line[n] = '\0';
+        text(x, y, line, c);
+        y += line_h;
+        s = p;
+    }
+    return y;
+}
+
+void draw_wifi() {
+    char s[48];
+    draw_title("Wi-Fi設定", 1);
+    label(0, "Wi-Fi");
+    button(half(0, 0), "ON", wi.on);
+    button(half(0, 1), "OFF", !wi.on);
+    const int LH = landscape ? 18 : 20, VX = landscape ? 96 : 92, VW = scr_w - VX;
+    int y = row_y(1);
+    /* state and the page's address */
+    if (!wi.on) strcpy(s, "OFF");
+    else if (wi.state == 1) strcpy(s, "接続中…");
+    else if (wi.state == 2) strcpy(s, "クライアント");
+    else strcpy(s, wi.fallback ? "ホスト（接続失敗）" : "ホスト");
+    text(0, y, "状態", GRAY);
+    y = text_wrap(VX, y, VW, s, !wi.on ? RED : wi.fallback ? YELLOW : GREEN, LH);
+    if (wi.on && wi.ip[0]) {
+        text(0, y, "アドレス", GRAY);
+        y = text_wrap(VX, y, VW, wi.ip, WHITE, LH);
+    }
+    if (wi.mode == 1) snprintf(s, sizeof(s), "クライアント %d秒", wi.wait);
+    else strcpy(s, "ホスト");
+    text(0, y, "モード", GRAY);
+    y = text_wrap(VX, y, VW, s, WHITE, LH);
+    /* the host (own access point) and the network joined in client mode */
+    text(0, y, "ホスト", BLUE);
+    y += LH;
+    text(4, y, "SSID", GRAY);
+    y = text_wrap(VX, y, VW, wi.ap_ssid, WHITE, LH);
+    text(4, y, "パスワード", GRAY);
+    y = text_wrap(VX, y, VW, wi.ap_pass, WHITE, LH);
+    text(0, y, "接続先", BLUE);
+    y += LH;
+    text(4, y, "SSID", GRAY);
+    y = text_wrap(VX, y, VW, wi.ssid[0] ? wi.ssid : "未設定", WHITE, LH);
+    text(4, y, "パスワード", GRAY);
+    text_wrap(VX, y, VW, wi.pass[0] ? wi.pass : "なし", WHITE, LH);
+}
+
+void press_wifi(int x, int y) {
+    if (BTN_BACK.in(x, y)) screen = SETTINGS;
+    else if (half(0, 0).in(x, y)) shared_set_wifi_on(true);
+    else if (half(0, 1).in(x, y)) shared_set_wifi_on(false);
 }
 
 /* ---- touch ---- */
@@ -686,15 +760,19 @@ void press_main(int x, int y) {
 }
 
 void press_advanced(int x, int y) {
+    static const int WARN[] = {-5, -1, 1, 5}, SLEEP[] = {-60, -10, 10, 60};
     if (BTN_BACK.in(x, y)) screen = SETTINGS;
-    else if (minus_button(0).in(x, y)) apply("cfg lbright=%d", max(cfg.lcd_bright - 10, 10));
-    else if (plus_button(0).in(x, y)) apply("cfg lbright=%d", min(cfg.lcd_bright + 10, 100));
-    else if (minus_button(1).in(x, y)) apply("cfg lsleep=%d", max(cfg.lcd_sleep - 10, 0));
-    else if (plus_button(1).in(x, y)) apply("cfg lsleep=%d", min(cfg.lcd_sleep + 10, 600));
-    else if (minus_button(2).in(x, y)) apply("cfg lsleep=%d", max(cfg.lcd_sleep - 60, 0));
-    else if (plus_button(2).in(x, y)) apply("cfg lsleep=%d", min(cfg.lcd_sleep + 60, 600));
-    else if (minus_button(3).in(x, y)) apply("cfg lpanel=%d", max(cfg.lcd_panel - 1, 0));
-    else if (plus_button(3).in(x, y)) apply("cfg lpanel=%d", min(cfg.lcd_panel + 1, 30));
+    else if (half(0, 0).in(x, y)) apply("cfg lland=%d", 0);
+    else if (half(0, 1).in(x, y)) apply("cfg lland=%d", 1);
+    else if (half(2, 0).in(x, y)) apply("cfg lbright=%d", max(cfg.lcd_bright - 10, 10));
+    else if (half(2, 1).in(x, y)) apply("cfg lbright=%d", min(cfg.lcd_bright + 10, 100));
+    else if (half(4, 0).in(x, y)) apply("cfg lpanel=%d", max(cfg.lcd_panel - 1, 0));
+    else if (half(4, 1).in(x, y)) apply("cfg lpanel=%d", min(cfg.lcd_panel + 1, 30));
+    else
+        for (int i = 0; i < 4; i++) {
+            if (col(1, i).in(x, y)) apply("cfg warn=%d", constrain(cfg.warn_dbfs + WARN[i], -60, 0));
+            else if (col(3, i).in(x, y)) apply("cfg lsleep=%d", constrain(cfg.lcd_sleep + SLEEP[i], 0, 600));
+        }
 }
 
 /* Gain steps: -1 is the hardware AGC, manual gains are 2 .. gain_max, so
@@ -708,61 +786,66 @@ int step_gain(int gain, int delta) {
 }
 
 void press_receiver(int x, int y) {
-    static const int GAIN[] = {-10, -1, 1, 10}, DWELL[] = {-50, -5, 5, 50}, CAL[] = {-50, -5, 5, 50},
-                     WARN[] = {-5, -1, 1, 5};
+    static const int DWELL[] = {-50, -5, 5, 50}, CAL[] = {-50, -5, 5, 50};
     if (BTN_BACK.in(x, y)) {
         screen = SETTINGS;
         return;
     }
     for (int i = 0; i < 4; i++) {
-        if (rate_button(i).in(x, y)) apply("cfg rate=%d", i);
-        else if (step_button(1, i).in(x, y)) apply("cfg gain=%d", step_gain(cfg.gain, GAIN[i]));
-        else if (step_button(2, i).in(x, y)) apply("cfg dwell=%d", constrain((int)cfg.dwell_ms + DWELL[i], 5, 500));
-        else if (step_button(4, i).in(x, y)) apply("cfg cal=%d", constrain(cfg.cal_tenths + CAL[i], -1000, 1000));
-        else if (step_button(5, i).in(x, y)) apply("cfg warn=%d", constrain(cfg.warn_dbfs + WARN[i], -60, 0));
+        if (col(0, i).in(x, y)) apply("cfg rate=%d", i);
+        else if (col(1, i).in(x, y)) apply("cfg dwell=%d", constrain((int)cfg.dwell_ms + DWELL[i], 5, 500));
+        else if (col(3, i).in(x, y)) apply("cfg cal=%d", constrain(cfg.cal_tenths + CAL[i], -1000, 1000));
     }
-    if (pair_button(3, 0).in(x, y)) apply("cfg det=%d", 1);
-    else if (pair_button(3, 1).in(x, y)) apply("cfg det=%d", 0);
+    if (half(2, 0).in(x, y)) apply("cfg det=%d", 1);
+    else if (half(2, 1).in(x, y)) apply("cfg det=%d", 0);
+    else if (half(4, 0).in(x, y)) apply("cfg ytop=%d", cfg.ytop - 5);
+    else if (half(4, 1).in(x, y)) apply("cfg ytop=%d", cfg.ytop + 5);
+    else if (half(5, 0).in(x, y)) apply("cfg yrange=%d", max(cfg.yrange - 5, 10));
+    else if (half(5, 1).in(x, y)) apply("cfg yrange=%d", cfg.yrange + 5);
+}
+
+void set_span(int start, int stop) {
+    char line[40];
+    snprintf(line, sizeof(line), "cfg start=%d stop=%d", start, stop);
+    shared_apply(line);
 }
 
 void press_settings(int x, int y) {
+    static const int MHZ[] = {-10, -1, 1, 10}, GAIN[] = {-10, -1, 1, 10};
     char line[32];
-    int r5 = orientation_row_y();
+    int a = cfg.start_mhz, b = cfg.stop_mhz;
     if (BTN_BACK.in(x, y)) screen = MAIN;
     else if (BTN_ADVANCED.in(x, y)) screen = ADVANCED;
     else if (BTN_RECEIVER.in(x, y)) screen = RECEIVER;
-    else if (Rect{scr_w - 144, r5, 68, BH}.in(x, y)) apply("cfg lland=%d", 0);
-    else if (Rect{scr_w - 68, r5, 68, BH}.in(x, y)) apply("cfg lland=%d", 1);
-    else if (Rect{scr_w - 144, row_y(0), 144, BH}.in(x, y) && have && active >= 0) {
-        const uint8_t *t = trace();
-        unsigned k = 0;
-        for (unsigned i = 1; i < N; i++)
-            if (t[i] > t[k]) k = i;
-        set_marker((int)lround((f0 + (f1 - f0) * (k + 0.5) / N) * 10));
-    }
-    else if (minus_button(1).in(x, y)) apply("cfg ytop=%d", cfg.ytop - 5);
-    else if (plus_button(1).in(x, y)) apply("cfg ytop=%d", cfg.ytop + 5);
-    else if (minus_button(2).in(x, y)) apply("cfg yrange=%d", max(cfg.yrange - 5, 10));
-    else if (plus_button(2).in(x, y)) apply("cfg yrange=%d", cfg.yrange + 5);
-    else if (pair_button(4, 1).in(x, y)) shared_clear_noise();
-    else if (pair_button(4, 0).in(x, y) && have) {
+    else if (BTN_WIFI.in(x, y)) screen = WIFI;
+    else if (half(0, 0).in(x, y)) set_span(PRESET[0][0], PRESET[0][1]);
+    else if (half(0, 1).in(x, y)) set_span(PRESET[1][0], PRESET[1][1]);
+    else if (half(5, 1).in(x, y)) shared_clear_noise();
+    else if (half(5, 0).in(x, y) && have) {
         /* the running average of the current span, as the page saves it */
         static uint8_t out[FRAME_SIZE];
         memset(out, 0, FRAME_HEADER);
         memcpy(out, "NSE2", 4);
-        uint32_t a = (uint32_t)lround(f0 * 1000), b = (uint32_t)lround(f1 * 1000);
+        uint32_t fa = (uint32_t)lround(f0 * 1000), fb = (uint32_t)lround(f1 * 1000);
         uint16_t n = N;
-        memcpy(out + 4, &a, 4);
-        memcpy(out + 8, &b, 4);
+        memcpy(out + 4, &fa, 4);
+        memcpy(out + 8, &fb, 4);
         memcpy(out + 12, &n, 2);
         memcpy(out + FRAME_HEADER, avg8, N);
         shared_store_noise(out);
-    } else
-        for (int b = 0; b < 5; b++)
-            if (band_button(b).in(x, y)) {
-                snprintf(line, sizeof(line), "cfg bands=%u", cfg.bands ^ (1u << b));
+    } else {
+        /* the span keeps at least 5 MHz (as the firmware enforces) */
+        for (int i = 0; i < 4; i++) {
+            if (col(1, i).in(x, y)) set_span(constrain(a + MHZ[i], 2300, b - 5), b);
+            else if (col(2, i).in(x, y)) set_span(a, constrain(b + MHZ[i], a + 5, 6000));
+            else if (col(3, i).in(x, y)) apply("cfg gain=%d", step_gain(cfg.gain, GAIN[i]));
+        }
+        for (int k = 0; k < 5; k++)
+            if (band_button(k).in(x, y)) {
+                snprintf(line, sizeof(line), "cfg bands=%u", cfg.bands ^ (1u << k));
                 shared_apply(line);
             }
+    }
 }
 
 /* Touch state, sampled by poll_touch() from the main loop and between the
@@ -813,6 +896,7 @@ void render() {
         set_layout(land);
     }
     st = shared_status();
+    if (screen == WIFI) wi = shared_wifi();
     has_noise = shared_noise(noise);
     /* Peak and average restart when the receiver settings change (as on the
      * page) and the peak restarts when peak hold is switched on. */
@@ -838,6 +922,7 @@ void render() {
         if (screen == MAIN) draw_main();
         else if (screen == SETTINGS) draw_settings();
         else if (screen == RECEIVER) draw_receiver();
+        else if (screen == WIFI) draw_wifi();
         else draw_advanced();
         lcd_push_rows(strip_y, min(STRIP, scr_h - strip_y), scr_w, buf);
         poll_touch();
@@ -859,45 +944,19 @@ int battery_percent(float mv) {
     return 0;
 }
 
-/* Every 2 s; the voltage is smoothed because radio bursts pull it down. */
-/* Why the chip last started, to tell a power-on or the reset button from
- * a crash, a watchdog or a supply dip (brownout). */
-const char *reset_reason() {
-    switch (esp_reset_reason()) {
-    case ESP_RST_POWERON: return "power-on";
-    case ESP_RST_EXT: return "reset pin";
-    case ESP_RST_SW: return "software restart";
-    case ESP_RST_PANIC: return "CRASH (panic)";
-    case ESP_RST_INT_WDT:
-    case ESP_RST_TASK_WDT:
-    case ESP_RST_WDT: return "WATCHDOG";
-    case ESP_RST_BROWNOUT: return "BROWNOUT (supply dip)";
-    case ESP_RST_USB: return "USB (download tool)";
-    case ESP_RST_JTAG: return "JTAG";
-    default: return "other";
-    }
-}
-
-int backlight = -1;       /* percent currently set, -1 = not yet */
-unsigned bring_ups;       /* LCD bring-ups since start */
-uint32_t first_screen_ms; /* time of the last bring-up's first screen */
-
-int last_raw = -1;
-float battery_mv;
-unsigned battery_bad_reads;
+int backlight = -1; /* percent currently set, -1 = not yet */
 
 /* Every BATTERY_READ_MS. Each read is a transfer the expander may garble
  * (seen: about 1 in 10 at a 2 s interval), so it reads seldom. */
 void read_battery() {
     if (!BATTERY_GAUGE) return;
     static float mv_avg;
-    static unsigned reads, misses, bad_reads;
+    static unsigned misses;
     int raw = lcd_battery_raw();
     float mv = raw * BATTERY_MV_PER_COUNT;
     /* A reading far from the average is a garbled transfer (seen: 67
      * instead of about 435), not the battery: it is dropped. */
     bool garbled = raw >= 0 && mv_avg && fabsf(mv - mv_avg) > 300;
-    if (garbled) bad_reads++;
     if (garbled) {
     } else if (raw < 0 || mv < 2500 || mv > 4600) {
         /* No battery, or a failed read: hide the level only when it lasts,
@@ -911,23 +970,7 @@ void read_battery() {
         mv_avg = mv_avg ? mv_avg * 0.8f + mv * 0.2f : mv;
         battery = battery_percent(mv_avg);
     }
-    last_raw = raw;
-    battery_mv = mv_avg;
-    battery_bad_reads = bad_reads;
-    reads++;
     shared_set_battery(battery);
-}
-
-/* About every 10 s, with the start-up timings: the USB serial port
- * reconnects only after the start, so the log lines printed then are
- * usually missed. */
-void log_status() {
-    Serial.printf("battery raw=%d mv=%.0f %d%% | LCD up %u time(s), last: expander answered after %lu ms, "
-                  "first screen at %lu ms | uptime %lu s, started by %s | gauge %d refresh %d | "
-                  "I2C errors %u, bad battery reads %u, backlight %d%%\n",
-                  last_raw, battery_mv, battery, bring_ups, (unsigned long)lcd_expander_wait_ms,
-                  (unsigned long)first_screen_ms, millis() / 1000, reset_reason(), BATTERY_GAUGE, EXPANDER_REFRESH,
-                  lcd_expander_errors, battery_bad_reads, backlight);
 }
 
 /* ---- backlight and power saving ----
@@ -946,10 +989,7 @@ int wanted_backlight(uint32_t now) {
 
 void update_backlight(uint32_t now) {
     int want = wanted_backlight(now);
-    if (want != backlight && lcd_backlight(want)) {
-        backlight = want;
-        Serial.printf("[%lu ms] LCD: backlight %d%%\n", now, want);
-    }
+    if (want != backlight && lcd_backlight(want)) backlight = want;
 }
 
 #ifndef LCD_BUTTON_LONG_MS
@@ -1000,24 +1040,18 @@ void bring_up() {
     }
     set_layout(false); /* the LCD set-up leaves it in portrait */
     flipped = false;
-    bring_ups++;
     read_battery();
     render();
     lcd_display_on();
     lcd_backlight(backlight);
-    first_screen_ms = millis();
-    Serial.printf("[%lu ms] LCD: first screen\n", millis());
 }
 
 void lcd_task(void *) {
     buf = (uint16_t *)malloc(LCD_H * STRIP * sizeof(uint16_t));
-    if (!buf) {
-        Serial.println("LCD: no memory for the strip buffer");
-        vTaskDelete(nullptr);
-    }
+    if (!buf) vTaskDelete(nullptr); /* no memory for the strip buffer */
     bring_up();
     bool expander_lost = false;
-    uint32_t last_draw = millis(), last_battery = last_draw, last_refresh = last_draw, last_log = 0;
+    uint32_t last_draw = millis(), last_battery = last_draw, last_refresh = last_draw;
     bool dirty = true;
     bool waking = false; /* the touch that woke the screen does nothing else */
     for (;;) {
@@ -1056,6 +1090,7 @@ void lcd_task(void *) {
                 if (screen == MAIN) press_main(touch.x, touch.y);
                 else if (screen == SETTINGS) press_settings(touch.x, touch.y);
                 else if (screen == RECEIVER) press_receiver(touch.x, touch.y);
+                else if (screen == WIFI) press_wifi(touch.x, touch.y);
                 else press_advanced(touch.x, touch.y);
                 cfg = shared_config(); /* a changed brightness applies at once */
             }
@@ -1070,10 +1105,6 @@ void lcd_task(void *) {
             dirty = true;
         }
         uint32_t now = millis();
-        if (now - last_log >= 10000) {
-            last_log = now;
-            log_status();
-        }
         if (now - last_battery >= BATTERY_READ_MS) {
             last_battery = now;
             read_battery();
@@ -1084,7 +1115,6 @@ void lcd_task(void *) {
              * dip) and reset the LCD with it: bring everything up again
              * once it answers. */
             if (!lcd_board_refresh(backlight < 0 ? 0 : backlight)) {
-                if (!expander_lost) Serial.printf("[%lu ms] LCD: I/O expander lost\n", now);
                 expander_lost = true;
                 continue;
             }

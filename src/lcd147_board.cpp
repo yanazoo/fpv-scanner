@@ -73,7 +73,6 @@ bool lcd_board_begin() {
     lcd_command(0x21);               /* inversion on (IPS panel) */
     lcd_command(0x13);               /* normal display mode */
     /* display on only after the first screen (lcd_display_on()) */
-    Serial.printf("[%lu ms] LCD: ready (1.47)\n", millis());
     return true;
 }
 

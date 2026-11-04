@@ -4,6 +4,7 @@
 static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="format-detection" content="telephone=no">
 <title>5.8GHz FPV Scanner</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#0d1117;color:#e6edf3;font:14px system-ui,sans-serif}
@@ -65,6 +66,23 @@ td.ch{cursor:pointer}#mt td:first-child,#mt th:first-child{width:1%;white-space:
  <button id="applyl">適用</button>
 </div></div>
 
+<div class="box"><div class="row">
+ Wi-Fi <label><select id="wmode"><option value="0">ホスト</option><option value="1">クライアント</option></select></label>
+ <label>待ち時間 <select id="wwait"><option value="15">15秒</option><option value="30">30秒</option><option value="60">60秒</option></select></label>
+</div>
+<div class="row"><b style="min-width:7.5em">ホスト（本体のWi-Fi）</b>
+ <label>SSID <input id="hssid" maxlength="32" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+ <label>パスワード <input type="password" id="hpass" maxlength="63" placeholder="変更しないときは空欄" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+</div>
+<div class="row"><b style="min-width:7.5em">クライアント（接続先）</b>
+ <label>SSID <input id="wssid" maxlength="32" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+ <label>パスワード <input type="password" id="wpass" maxlength="63" placeholder="変更しないときは空欄" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+</div>
+<div class="row"><label><input type="checkbox" id="wshow">パスワードを表示</label><button id="applyw">適用</button></div>
+<div id="wmsg" style="font-size:13px;color:#f2cc60"></div>
+<div id="wsaved" style="font-size:13px;margin-top:4px"></div>
+<div id="wst" style="font-size:13px;margin-top:2px"></div></div>
+
 </main>
 <script>
 const BANDS={A:[5865,5845,5825,5805,5785,5765,5745,5725],B:[5733,5752,5771,5790,5809,5828,5847,5866],
@@ -108,7 +126,8 @@ function placed(){renderFpv();redraw();const s=(cfg.markers||[]).map(t=>t<0?null
 function fillForm(s){$('start').value=s.start;$('stop').value=s.stop;$('rate').value=s.rate;$('dwell').value=s.dwell;$('det').value=s.det;
  $('gain').value=s.gain;$('cal').value=(s.cal/10).toFixed(1);$('warnd').value=s.warn??-15;$('hold').checked=!!s.hold;$('avg').checked=!!s.avg;$('ytop').value=s.ytop;$('yrng').value=s.yrange;
  document.querySelectorAll('#bandsel input').forEach(i=>i.checked=shown(i.dataset.b));markers=s.markers.map(t=>t<0?null:t/10);placed()}
-function send(t){if(ws&&ws.readyState===1){ws.send(t);return true}alert('S3に接続されていません');return false}
+// Not connected: nothing is sent and the apply button stays marked (the header shows the connection).
+function send(t){if(ws&&ws.readyState===1){ws.send(t);return true}return false}
 function apply(t,btn){if(send(t))btn.classList.remove('dirty')}
 const dirtyOn=(ids,btn)=>ids.forEach(id=>$(id).oninput=()=>$(btn).classList.add('dirty'));
 dirtyOn(['start','stop'],'applys');dirtyOn(['lbright','lsleep','lflip'],'applyl');dirtyOn(['rate','dwell','det','gain','cal','warnd'],'applyr');
@@ -117,6 +136,42 @@ $('applys').onclick=()=>{const a=Math.round(+$('start').value),b=Math.max(a+5,Ma
 // LCD builds only: backlight, power saving, landscape turned over
 $('applyl').onclick=()=>apply(`cfg lbright=${Math.round(+$('lbright').value)} lsleep=${Math.round(+$('lsleep').value)} lflip=${+$('lflip').checked}`,$('applyl'));
 $('applyr').onclick=()=>apply(`cfg rate=${$('rate').value} dwell=${$('dwell').value} det=${$('det').value} gain=${$('gain').value} cal=${Math.round(+$('cal').value*10)} warn=${Math.round(+$('warnd').value)}`,$('applyr'));
+// Wi-Fi: host = own access point; client = join the network, and when that fails for the
+// set time start the access point instead. Applied at once (this page reconnects).
+dirtyOn(['wmode','wwait','wssid','wpass','hssid','hpass'],'applyw');
+$('applyw').onclick=()=>{const m=$('wmode').value,ssid=$('wssid').value.trim(),pw=$('wpass').value,hs=$('hssid').value.trim(),hp=$('hpass').value;
+ // No dialogs: the iPhone's login window (captive portal) does not show them.
+ const msg=t=>{$('wmsg').textContent=t};msg('');
+ if(!hs)return msg('ホストのSSIDを入力してください');
+ if(m==='1'&&!ssid)return msg('クライアントの接続先（SSID）を入力してください');
+ if(hp&&(hp.length<8||hp.length>63)||pw&&(pw.length<8||pw.length>63))return msg('パスワードは8〜63文字です');
+ if(/\n/.test(ssid+pw+hs+hp))return msg('改行は使えません');
+ // An empty password keeps the saved one (client: for the same network; a new network without one is open).
+ const keep=!pw&&ssid===(cfg.wssid??'')?1:0,hkeep=hp?0:1;
+ const hostNow=(cfg.wstate??0)===0,hostChange=hs!==cfg.ap||!!hp,change=m!==String(cfg.wmode)||ssid!==cfg.wssid||pw||(hostNow&&hostChange);
+ if(!send(['wifi',m,$('wwait').value,ssid,pw,keep,hs,hp,hkeep].join('\n')))return msg('本体に接続されていないため送れませんでした');
+ if(change)msg(m==='1'&&ssid!==''&&(m!==String(cfg.wmode)||ssid!==cfg.wssid||pw)?`${ssid} に接続します。スマホ・PCも ${ssid} につなぎ、http://${cfg.mdns}.local/ または液晶の詳細設定に出るアドレスを開いてください`:
+  `ホスト ${hs} に切り替えます。スマホ・PCを ${hs} につなぎ直してください`);
+ {$('applyw').classList.remove('dirty');$('wpass').value='';$('hpass').value='';$('wshow').checked=false;$('wpass').type=$('hpass').type='password'}};
+// Showing the passwords asks the device for the saved ones (sent to this page only).
+let shownPass={};
+$('wshow').onchange=()=>{const on=$('wshow').checked,t=on?'text':'password';$('wpass').type=t;$('hpass').type=t;
+ if(on)send('wifi pass');else for(const k of['hpass','wpass'])if($(k).value===shownPass[k])$(k).value=''};
+function showPass(j){if(!$('wshow').checked)return;shownPass=j;for(const k of['hpass','wpass'])if(!$(k).value)$(k).value=j[k]}
+// Why the client connection failed (Wi-Fi reason codes of the ESP32).
+function failWhy(r){if(!r)return'';const t={201:'接続先が見つかりません（SSIDと、2.4GHzのWi-Fiか確認。iPhoneのインターネット共有は「互換性を優先」をオン）',
+ 15:'パスワードが違う可能性があります',202:'パスワードが違う可能性があります',204:'パスワードが違う可能性があります',2:'認証に失敗しました',
+ 205:'接続に失敗しました',200:'電波が弱い・切れました'}[r];return '：'+(t||`理由コード ${r}`)}
+// Saved settings (what the next start uses) and the current state, always shown.
+function wifiState(s){const st=s.wstate??0,cl=+s.wmode===1;
+ $('wsaved').innerHTML='';[`保存中の設定: モード ${cl?'クライアント（つながらないとき '+s.wwait+'秒でホスト）':'ホスト'}`,
+  `　ホスト: SSID ${s.ap}（パスワード保存済み）`,`　クライアント: 接続先 ${s.wssid||'未設定'}（パスワード ${s.wpass?'保存済み':'なし'}）`]
+  .forEach(t=>{const d=document.createElement('div');d.textContent=t;$('wsaved').appendChild(d)});
+ $('wst').textContent='現在の状態: '+(st===1?`${s.wssid} に接続中…`:st===2?`クライアントで ${s.wssid} に接続中 → http://${s.wip}/ または http://${s.mdns}.local/`:
+  `ホスト（SSID ${s.ap}） → http://${s.wip}/`+(s.wfb?` ※${s.wssid} につながらなかったためホストで起動中${failWhy(s.wreason)}`:''));
+ $('wst').style.color=s.wfb?'#f2cc60':'#3fb950';
+ if(!$('applyw').classList.contains('dirty')){$('wmode').value=s.wmode;$('wwait').value=s.wwait;$('wssid').value=s.wssid;$('hssid').value=s.ap;
+  $('wpass').placeholder=s.wpass?'変更しないときは空欄':'なし（オープン）'}}
 // Display settings take effect at once; the S3 saves them after typing pauses.
 let dispTimer,dispEdit=0;
 function display(){const top=Math.round(+$('ytop').value),yr=Math.round(+$('yrng').value);if(!isFinite(top)||!(yr>=10))return;
@@ -155,7 +210,7 @@ function onStatus(s){
  $('lcdbox').hidden=!s.lcd;if(s.lcd&&!$('applyl').classList.contains('dirty')){$('lbright').value=s.lbright;$('lsleep').value=s.lsleep;$('lflip').checked=!!s.lflip}
  // Battery of the LCD build (-1: none, as on the S3).
  const b=s.bat??-1;$('bat').textContent=b<0?'':`電池${b}%`;$('bat').className=b<0?'':b<(s.bat_low??10)?'lo':b<50?'mid':'hi';
- gerr=s.error;showErr();if(s.error)$('gain').value=s.gain;
+ wifiState(s);gerr=s.error;showErr();if(s.error)$('gain').value=s.gain;
  if(s.gain_max)$('grange').textContent=`-1=自動、2〜${s.gain_max}（小さいほど強い電波向き、大きいほど弱い電波向き）`;placed()}
 // Errors and warnings share the header bar.
 let gerr='';function showErr(){$('err').textContent=[gerr,warn].filter(Boolean).join(' / ')}
@@ -167,7 +222,7 @@ function onFrame(buf){const v=new DataView(buf),magic=v.getUint32(0,true),a=v.ge
  // Saturation hint: the strongest point above the set dBFS (cfg.warn).
  const w=Math.max(...t)/2-84.3>(cfg.warn??-15)?'ゲイン下げて':'';if(w!==warn){warn=w;showErr()}redraw()}
 function connect(){ws=new WebSocket('ws://'+location.hostname+':81/');ws.binaryType='arraybuffer';lastMsg=Date.now();
- ws.onmessage=e=>{lastMsg=Date.now();typeof e.data==='string'?onStatus(JSON.parse(e.data)):onFrame(e.data)};
+ ws.onmessage=e=>{lastMsg=Date.now();if(typeof e.data!=='string')return onFrame(e.data);const j=JSON.parse(e.data);j.type==='wifipass'?showPass(j):onStatus(j)};
  ws.onclose=()=>{$('st').textContent='再接続中';$('st').className='ng';setTimeout(connect,1000)}}
 setInterval(()=>{if(ws&&ws.readyState===1&&Date.now()-lastMsg>5000)ws.close()},1000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&ws&&Date.now()-lastMsg>5000)ws.close()});
