@@ -579,7 +579,7 @@ void draw_advanced() {
     label(0, "画面の向き");
     button(col(0, 0), "縦", !cfg.lcd_land);
     button(col(0, 1), "横", cfg.lcd_land);
-    button(cell(0, 2, 4, 4), "上下反転", cfg.lcd_flip);
+    button(cell(0, 2, 4, 4), "反転", cfg.lcd_flip);
     /* "ゲイン下げて" shows when the strongest point exceeds this (dBFS) */
     snprintf(s, sizeof(s), "%ddBFS", cfg.warn_dbfs);
     label(1, "警告", s);
