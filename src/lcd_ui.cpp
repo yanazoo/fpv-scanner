@@ -470,7 +470,7 @@ Rect cell(int r, int i, int j, int n) {
 }
 Rect col(int r, int i) { return cell(r, i, i + 1, 4); }       /* one of four columns */
 Rect half(int r, int i) { return cell(r, 2 * i, 2 * i + 2, 4); } /* left or right pair */
-Rect band_button(int b) { return cell(4, b, b + 1, 5); }
+Rect band_button(int b) { return cell(5, b, b + 1, 5); }
 
 /* row label and its value (none: nullptr) */
 void label(int r, const char *name, const char *value = nullptr, uint16_t vc = BLUE) {
@@ -499,14 +499,17 @@ void draw_title(const char *title, int buttons) {
     if (buttons > 3) button(BTN_WIFI, "Wi-Fi");
 }
 
-/* ---- settings (first page): span, gain, bands, noise reference ----
+/* ---- settings (first page): span presets, start, stop, gain, bands ----
  * Each change goes through the same "cfg" lines as the page's apply buttons:
  * it is saved and restarts the sweep where needed. */
-/* span presets: three equal buttons (the range itself shows below スパン) */
-const int PRESETS = 3;
-const unsigned PRESET[PRESETS][2] = {{5650, 5850}, {5640, 5950}, {2400, 2500}};
-const char *const PRESET_NAME[PRESETS] = {"5.8G", "5.8G広", "2.4G"};
-Rect preset_button(int i) { return cell(0, i, i + 1, PRESETS); }
+/* span presets: two rows of three equal buttons (the range itself shows
+ * beside スパン). Top: FPV video (VTX standard / broad) and 2.4 GHz; bottom:
+ * the Japanese 5 GHz Wi-Fi bands W52, W53 and W56. */
+const int PRESETS = 6;
+const unsigned PRESET[PRESETS][2] = {{5650, 5850}, {5640, 5950}, {2400, 2500},
+                                     {5150, 5250}, {5250, 5350}, {5470, 5725}};
+const char *const PRESET_NAME[PRESETS] = {"VTXs", "VTXb", "2.4G", "W52", "W53", "W56"};
+Rect preset_button(int i) { return cell(i / 3, i % 3, i % 3 + 1, 3); }
 const char *const MHZ_STEP[4] = {"-10", "-1", "+1", "+10"};
 
 void draw_settings() {
@@ -517,24 +520,22 @@ void draw_settings() {
     for (int i = 0; i < PRESETS; i++)
         button(preset_button(i), PRESET_NAME[i], cfg.start_mhz == PRESET[i][0] && cfg.stop_mhz == PRESET[i][1]);
     snprintf(s, sizeof(s), "%u", cfg.start_mhz);
-    label(1, "開始", s);
-    four(1, MHZ_STEP);
-    snprintf(s, sizeof(s), "%u", cfg.stop_mhz);
-    label(2, "終了", s);
+    label(2, "開始", s);
     four(2, MHZ_STEP);
+    snprintf(s, sizeof(s), "%u", cfg.stop_mhz);
+    label(3, "終了", s);
+    four(3, MHZ_STEP);
     if (cfg.gain < 0) strcpy(s, "自動");
     else snprintf(s, sizeof(s), "%d", cfg.gain);
-    label(3, "ゲイン", s);
+    label(4, "ゲイン", s);
     static const char *const GAIN_STEP[4] = {"-10", "-1", "+1", "+10"};
-    four(3, GAIN_STEP);
-    label(4, "バンド");
+    four(4, GAIN_STEP);
+    label(5, "バンド");
     for (int b = 0; b < 5; b++) {
         char name[2] = {BAND_NAME[b], 0};
         button(band_button(b), name, cfg.bands >> b & 1);
     }
-    label(5, "ノイズ基準", has_noise ? "保存済み" : "未保存", has_noise ? GREEN : GRAY);
-    button(half(5, 0), "保存");
-    button(half(5, 1), "消去");
+    /* the noise reference is saved and cleared on the web page */
 }
 
 /* ---- receiver settings: step, dwell, detector, calibration, graph scale ---- */
@@ -824,28 +825,14 @@ void press_settings(int x, int y) {
     else if (BTN_ADVANCED.in(x, y)) screen = ADVANCED;
     else if (BTN_RECEIVER.in(x, y)) screen = RECEIVER;
     else if (BTN_WIFI.in(x, y)) screen = WIFI;
-    else if (preset_button(0).in(x, y)) set_span(PRESET[0][0], PRESET[0][1]);
-    else if (preset_button(1).in(x, y)) set_span(PRESET[1][0], PRESET[1][1]);
-    else if (preset_button(2).in(x, y)) set_span(PRESET[2][0], PRESET[2][1]);
-    else if (half(5, 1).in(x, y)) shared_clear_noise();
-    else if (half(5, 0).in(x, y) && have) {
-        /* the running average of the current span, as the page saves it */
-        static uint8_t out[FRAME_SIZE];
-        memset(out, 0, FRAME_HEADER);
-        memcpy(out, "NSE2", 4);
-        uint32_t fa = (uint32_t)lround(f0 * 1000), fb = (uint32_t)lround(f1 * 1000);
-        uint16_t n = N;
-        memcpy(out + 4, &fa, 4);
-        memcpy(out + 8, &fb, 4);
-        memcpy(out + 12, &n, 2);
-        memcpy(out + FRAME_HEADER, avg8, N);
-        shared_store_noise(out);
-    } else {
+    else {
+        for (int i = 0; i < PRESETS; i++)
+            if (preset_button(i).in(x, y)) set_span(PRESET[i][0], PRESET[i][1]);
         /* the span keeps at least 5 MHz (as the firmware enforces) */
         for (int i = 0; i < 4; i++) {
-            if (col(1, i).in(x, y)) set_span(constrain(a + MHZ[i], 2300, b - 5), b);
-            else if (col(2, i).in(x, y)) set_span(a, constrain(b + MHZ[i], a + 5, 6000));
-            else if (col(3, i).in(x, y)) apply("cfg gain=%d", step_gain(cfg.gain, GAIN[i]));
+            if (col(2, i).in(x, y)) set_span(constrain(a + MHZ[i], 2300, b - 5), b);
+            else if (col(3, i).in(x, y)) set_span(a, constrain(b + MHZ[i], a + 5, 6000));
+            else if (col(4, i).in(x, y)) apply("cfg gain=%d", step_gain(cfg.gain, GAIN[i]));
         }
         for (int k = 0; k < 5; k++)
             if (band_button(k).in(x, y)) {
