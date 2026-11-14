@@ -14,6 +14,7 @@
 #include <Preferences.h>
 #include <WebSocketsServer.h>
 #include <WiFi.h>
+#include <esp_task_wdt.h>
 #include "config.h"
 #include "index_html.h"
 #include "portal_http.h"
@@ -304,7 +305,9 @@ static void sweep_task(void *) {
     static bool filled[SWEEP_POINTS];
     SweepConfig c;
     unsigned shown_start = 0, shown_stop = 0, shown_rate = ~0u;
+    esp_task_wdt_add(nullptr);
     for (;;) {
+        esp_task_wdt_reset();
         if (!sdr.connected()) {
             xSemaphoreTake(lock, portMAX_DELAY);
             c = config;
@@ -347,6 +350,7 @@ static void sweep_task(void *) {
         uint32_t t0 = millis(), tune_total = 0, measure_total = 0;
         bool ok = true, restarted = false;
         for (unsigned s = 0; s < steps && ok; s++) {
+            esp_task_wdt_reset();
             /* A new setting restarts the sweep instead of waiting for it to end. */
             if (changed_since_start()) {
                 restarted = true;
@@ -611,7 +615,9 @@ static void ws_task(void *) {
     static uint8_t out[HEADER + SWEEP_POINTS];
     static char status_out[sizeof(status_text)];
     uint32_t last_send = 0;
+    esp_task_wdt_add(nullptr);
     for (;;) {
+        esp_task_wdt_reset();
         ws.loop();
         /* Status at least every 2 s, so pages can tell a long sweep from a
          * dead connection (they reconnect after 5 s of silence). */
@@ -846,8 +852,25 @@ static void poll_wifi() {
     }
 }
 
+/* Watchdog: the sweep, page and LCD tasks each report in as they go round;
+ * one that hangs for WATCHDOG_S restarts the board instead of leaving it
+ * frozen. The longest steps (a 500 ms dwell, writing a screenshot, waiting
+ * for the LCD's I/O expander) take a few seconds at most. */
+static const unsigned WATCHDOG_S = 30;
+static void start_watchdog() {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    esp_task_wdt_config_t wdt = {};
+    wdt.timeout_ms = WATCHDOG_S * 1000;
+    wdt.trigger_panic = true;
+    if (esp_task_wdt_reconfigure(&wdt) != ESP_OK) esp_task_wdt_init(&wdt);
+#else
+    esp_task_wdt_init(WATCHDOG_S, true);
+#endif
+}
+
 void setup() {
     Serial.begin(115200);
+    start_watchdog();
     lock = xSemaphoreCreateMutex();
     load_settings();
     last.c = config;

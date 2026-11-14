@@ -16,6 +16,7 @@
  * STRIP rows: the whole scene is drawn into each strip, clipped. */
 #include "lcd_ui.h"
 #include <Arduino.h>
+#include <esp_task_wdt.h>
 #include "lcd_board.h"
 #include "lcd_font.h"
 #include "shared.h"
@@ -112,7 +113,9 @@ void text_center(int cx, int y, const char *s, uint16_t c) { text(cx - text_widt
 
 struct Rect {
     int x, y, w, h;
-    bool in(int px, int py) const { return px >= x && px < x + w && py >= y && py < y + h; }
+    /* with a little slack, so that a touch in the gap between two buttons
+     * (or just off an edge) still counts */
+    bool in(int px, int py) const { return px >= x - 1 && px < x + w + 1 && py >= y - 2 && py < y + h + 2; }
 };
 void button(const Rect &r, const char *label, bool on = false) {
     fill(r.x, r.y, r.w, r.h, on ? ACCENT : PANEL);
@@ -123,15 +126,24 @@ void button(const Rect &r, const char *label, bool on = false) {
     text_center(r.x + r.w / 2, r.y + (r.h - 16) / 2, label, WHITE);
 }
 
-/* Settings icon: a gear of 8 teeth, about 20 px across, centred on cx, cy. */
+/* Settings icon: a gear of 8 teeth, about 20 px across, centred on cx, cy
+ * (its shape is worked out once). */
 void gear(int cx, int cy, uint16_t c) {
+    static uint32_t rows[21];
+    static bool made;
+    if (!made) {
+        made = true;
+        for (int dy = -10; dy <= 10; dy++)
+            for (int dx = -10; dx <= 10; dx++) {
+                float r = sqrtf(dx * dx + dy * dy);
+                if (r < 3.5f) continue; /* hole */
+                bool tooth = cosf(8 * atan2f(dy, dx)) > 0.2f;
+                if (r <= (tooth ? 10.0f : 7.5f)) rows[dy + 10] |= 1u << (dx + 10);
+            }
+    }
     for (int dy = -10; dy <= 10; dy++)
-        for (int dx = -10; dx <= 10; dx++) {
-            float r = sqrtf(dx * dx + dy * dy);
-            if (r < 3.5f) continue; /* hole */
-            bool tooth = cosf(8 * atan2f(dy, dx)) > 0.2f;
-            if (r <= (tooth ? 10.0f : 7.5f)) pixel(cx + dx, cy + dy, c);
-        }
+        for (int dx = -10; dx <= 10; dx++)
+            if (rows[dy + 10] >> (dx + 10) & 1) pixel(cx + dx, cy + dy, c);
 }
 
 /* ---- state ---- */
@@ -213,7 +225,20 @@ void open_panel() {
     panel_until = millis() + (uint32_t)cfg.lcd_panel * 1000;
 }
 /* peak hold and average (toggles), peak hold reset, settings */
-Rect BTN_HOLD, BTN_AVG, BTN_RESET, BTN_SETTINGS;
+Rect BTN_HOLD, BTN_AVG, BTN_RESET, BTN_SAVE, BTN_SETTINGS;
+const int MAIN_BUTTONS = 5; /* peak hold, average, peak reset, save to the card, settings */
+
+/* A short message over the graph (screenshot saved, no card ...). */
+char toast_text[40];
+uint16_t toast_color;
+uint32_t toast_until;
+void toast(const char *message, uint16_t color, uint32_t ms = 2500) {
+    strlcpy(toast_text, message, sizeof(toast_text));
+    toast_color = color;
+    toast_until = millis() + ms;
+}
+bool capturing;      /* drawing for a screenshot: no buttons, tab or message */
+bool save_requested; /* the save button was pressed (done by the LCD task) */
 
 void set_settings_layout(bool land);
 void set_layout(bool land) {
@@ -223,8 +248,8 @@ void set_layout(bool land) {
         scr_w = LCD_W, scr_h = LCD_H;
         PW = LCD_W - PX, PH = 150;
         TY = PY + PH + 20;
-        BTN_HOLD = {0, 288, 57, 32}, BTN_AVG = {61, 288, 57, 32}, BTN_RESET = {122, 288, 57, 32},
-        BTN_SETTINGS = {183, 288, 57, 32};
+        BTN_HOLD = {0, 288, 44, 32}, BTN_AVG = {49, 288, 44, 32}, BTN_RESET = {98, 288, 44, 32},
+        BTN_SAVE = {147, 288, 44, 32}, BTN_SETTINGS = {196, 288, 44, 32};
     } else {
         scr_w = LCD_H, scr_h = LCD_W;
         /* without touch there is no button panel and no tab for it */
@@ -374,6 +399,14 @@ void draw_main() {
         text(PX, PY + PH - 16, "ゲイン範囲外→自動", YELLOW);
     }
 
+    if (toast_text[0] && !capturing) {
+        int w = text_width(toast_text) + 16, cx = PX + PW / 2, cy = PY + PH / 2;
+        fill(cx - w / 2, cy - 14, w, 28, PANEL);
+        hline(cx - w / 2, cx + w / 2 - 1, cy - 14, BORDER);
+        hline(cx - w / 2, cx + w / 2 - 1, cy + 13, BORDER);
+        text_center(cx, cy - 8, toast_text, toast_color);
+    }
+
     if (landscape) {
         /* markers in one row of four cells: a bar in the marker's colour
          * (as its number on the graph), level and whole MHz */
@@ -394,7 +427,7 @@ void draw_main() {
             text_right(x0 + CW - 1, y, s, dim(MCOL[m]));
         }
         /* tab, and the sliding button panel over the graph */
-        if (!LCD_HAS_TOUCH) return; /* no buttons on screen */
+        if (!LCD_HAS_TOUCH || capturing) return; /* no buttons on screen */
         if (panel_px < PANEL_W) {
             fill(scr_w - TAB_W, PY, TAB_W, PH, PANEL);
             text(scr_w - TAB_W + 4, PY + PH / 2 - 8, "◀", GRAY);
@@ -403,10 +436,11 @@ void draw_main() {
             int px = scr_w - panel_px;
             fill(px, PY, PANEL_W, PH + 2, BLACK);
             vline(px, PY, PY + PH + 1, BORDER);
-            const int bh = (PH - 3 * 4) / 4;
+            const int bh = (PH - (MAIN_BUTTONS - 1) * 4) / MAIN_BUTTONS;
             BTN_HOLD = {px + 4, PY, PANEL_W - 4, bh}, BTN_AVG = {px + 4, PY + bh + 4, PANEL_W - 4, bh},
             BTN_RESET = {px + 4, PY + 2 * (bh + 4), PANEL_W - 4, bh},
-            BTN_SETTINGS = {px + 4, PY + 3 * (bh + 4), PANEL_W - 4, bh};
+            BTN_SAVE = {px + 4, PY + 3 * (bh + 4), PANEL_W - 4, bh},
+            BTN_SETTINGS = {px + 4, PY + 4 * (bh + 4), PANEL_W - 4, bh};
         } else {
             return; /* buttons hidden */
         }
@@ -436,9 +470,11 @@ void draw_main() {
     }
     }
 
+    if (capturing) return;
     button(BTN_HOLD, "Hold", cfg.hold);
     button(BTN_AVG, "Ave", cfg.avg);
     button(BTN_RESET, "Reset");
+    button(BTN_SAVE, "Save");
     button(BTN_SETTINGS, "");
     gear(BTN_SETTINGS.x + BTN_SETTINGS.w / 2, BTN_SETTINGS.y + BTN_SETTINGS.h / 2, WHITE);
 }
@@ -699,6 +735,12 @@ void apply(const char *fmt, int value) {
     snprintf(line, sizeof(line), fmt, value);
     shared_apply(line);
 }
+/* Set by the -/+ buttons: holding one down repeats it. */
+bool repeatable;
+void step(const char *fmt, int value) {
+    apply(fmt, value);
+    repeatable = true;
+}
 
 void drag_to(int x) {
     double f = f0 + (x - PX + 0.5) * (f1 - f0) / PW;
@@ -728,13 +770,14 @@ void press_main(int x, int y) {
         return;
     } else if (landscape) {
         if (on_panel(x) && y < TY - 2) {
-            /* panel buttons: four rows, gaps included; the panel slides
+            /* panel buttons: five rows, gaps included; the panel slides
              * back once a button was pressed */
             panel_open = false;
-            switch (constrain((y - PY) * 4 / PH, 0, 3)) {
+            switch (constrain((y - PY) * MAIN_BUTTONS / PH, 0, MAIN_BUTTONS - 1)) {
             case 0: apply("cfg hold=%d", !cfg.hold); break;
             case 1: apply("cfg avg=%d", !cfg.avg); break;
             case 2: memcpy(peak, data, N); break;
+            case 3: save_requested = true; break;
             default:
                 panel_open = false, panel_px = 0;
                 screen = SETTINGS;
@@ -753,13 +796,14 @@ void press_main(int x, int y) {
         int m = (y - TY - 16) / ROW;
         active = m == active ? -1 : m;
     } else if (y >= TY + 16 + 4 * ROW) {
-        /* Bottom buttons: anything below the table counts, split into four
+        /* Bottom buttons: anything below the table counts, split into five
          * columns, so taps near the edges and corners (where the panel is
          * least accurate) and in the gaps still hit a button. */
-        switch (min(x * 4 / scr_w, 3)) {
+        switch (min(x * MAIN_BUTTONS / scr_w, MAIN_BUTTONS - 1)) {
         case 0: apply("cfg hold=%d", !cfg.hold); break;
         case 1: apply("cfg avg=%d", !cfg.avg); break;
         case 2: memcpy(peak, data, N); break;
+        case 3: save_requested = true; break;
         default: screen = SETTINGS;
         }
     }
@@ -771,14 +815,14 @@ void press_advanced(int x, int y) {
     else if (cell(0, 0, 1, 3).in(x, y)) apply("cfg lland=%d", 0);
     else if (cell(0, 1, 2, 3).in(x, y)) apply("cfg lland=%d", 1);
     else if (cell(0, 2, 3, 3).in(x, y)) apply("cfg lflip=%d", !cfg.lcd_flip);
-    else if (half(2, 0).in(x, y)) apply("cfg lbright=%d", max(cfg.lcd_bright - 10, 10));
-    else if (half(2, 1).in(x, y)) apply("cfg lbright=%d", min(cfg.lcd_bright + 10, 100));
-    else if (half(4, 0).in(x, y)) apply("cfg lpanel=%d", max(cfg.lcd_panel - 1, 0));
-    else if (half(4, 1).in(x, y)) apply("cfg lpanel=%d", min(cfg.lcd_panel + 1, 30));
+    else if (half(2, 0).in(x, y)) step("cfg lbright=%d", max(cfg.lcd_bright - 10, 10));
+    else if (half(2, 1).in(x, y)) step("cfg lbright=%d", min(cfg.lcd_bright + 10, 100));
+    else if (half(4, 0).in(x, y)) step("cfg lpanel=%d", max(cfg.lcd_panel - 1, 0));
+    else if (half(4, 1).in(x, y)) step("cfg lpanel=%d", min(cfg.lcd_panel + 1, 30));
     else
         for (int i = 0; i < 4; i++) {
-            if (col(1, i).in(x, y)) apply("cfg warn=%d", constrain(cfg.warn_dbfs + WARN[i], -60, 0));
-            else if (col(3, i).in(x, y)) apply("cfg lsleep=%d", constrain(cfg.lcd_sleep + SLEEP[i], 0, 600));
+            if (col(1, i).in(x, y)) step("cfg warn=%d", constrain(cfg.warn_dbfs + WARN[i], -60, 0));
+            else if (col(3, i).in(x, y)) step("cfg lsleep=%d", constrain(cfg.lcd_sleep + SLEEP[i], 0, 600));
         }
 }
 
@@ -800,15 +844,15 @@ void press_receiver(int x, int y) {
     }
     for (int i = 0; i < 4; i++) {
         if (col(0, i).in(x, y)) apply("cfg rate=%d", i);
-        else if (col(1, i).in(x, y)) apply("cfg dwell=%d", constrain((int)cfg.dwell_ms + DWELL[i], 5, 500));
-        else if (col(3, i).in(x, y)) apply("cfg cal=%d", constrain(cfg.cal_tenths + CAL[i], -1000, 1000));
+        else if (col(1, i).in(x, y)) step("cfg dwell=%d", constrain((int)cfg.dwell_ms + DWELL[i], 5, 500));
+        else if (col(3, i).in(x, y)) step("cfg cal=%d", constrain(cfg.cal_tenths + CAL[i], -1000, 1000));
     }
     if (half(2, 0).in(x, y)) apply("cfg det=%d", 1);
     else if (half(2, 1).in(x, y)) apply("cfg det=%d", 0);
-    else if (half(4, 0).in(x, y)) apply("cfg ytop=%d", cfg.ytop - 5);
-    else if (half(4, 1).in(x, y)) apply("cfg ytop=%d", cfg.ytop + 5);
-    else if (half(5, 0).in(x, y)) apply("cfg yrange=%d", max(cfg.yrange - 5, 10));
-    else if (half(5, 1).in(x, y)) apply("cfg yrange=%d", cfg.yrange + 5);
+    else if (half(4, 0).in(x, y)) step("cfg ytop=%d", cfg.ytop - 5);
+    else if (half(4, 1).in(x, y)) step("cfg ytop=%d", cfg.ytop + 5);
+    else if (half(5, 0).in(x, y)) step("cfg yrange=%d", max(cfg.yrange - 5, 10));
+    else if (half(5, 1).in(x, y)) step("cfg yrange=%d", cfg.yrange + 5);
 }
 
 void set_span(int start, int stop) {
@@ -830,9 +874,9 @@ void press_settings(int x, int y) {
             if (preset_button(i).in(x, y)) set_span(PRESET[i][0], PRESET[i][1]);
         /* the span keeps at least 5 MHz (as the firmware enforces) */
         for (int i = 0; i < 4; i++) {
-            if (col(2, i).in(x, y)) set_span(constrain(a + MHZ[i], 2300, b - 5), b);
-            else if (col(3, i).in(x, y)) set_span(a, constrain(b + MHZ[i], a + 5, 6000));
-            else if (col(4, i).in(x, y)) apply("cfg gain=%d", step_gain(cfg.gain, GAIN[i]));
+            if (col(2, i).in(x, y)) set_span(constrain(a + MHZ[i], 2300, b - 5), b), repeatable = true;
+            else if (col(3, i).in(x, y)) set_span(a, constrain(b + MHZ[i], a + 5, 6000)), repeatable = true;
+            else if (col(4, i).in(x, y)) step("cfg gain=%d", step_gain(cfg.gain, GAIN[i]));
         }
         for (int k = 0; k < 5; k++)
             if (band_button(k).in(x, y)) {
@@ -849,12 +893,23 @@ void press_settings(int x, int y) {
 struct {
     bool down;              /* finger on the panel */
     int x, y;               /* last reported position */
-    uint32_t last_report;
+    uint32_t first_report, last_report;
+    unsigned reports;       /* positions reported during this touch */
     bool pressed, released; /* events for the main loop */
 } touch;
-/* No report for this long means the finger was lifted (the panel skips a
- * report now and then while touched). */
-const uint32_t RELEASE_MS = 80;
+/* No report for this long means the finger was lifted. The panel skips
+ * reports now and then while touched, more so through a cover (a case's
+ * window): one touch must not turn into two taps. */
+const uint32_t RELEASE_MS = 60;
+/* A touch acts once its position has settled (the first contact point is
+ * the least accurate): on the second report or after this time, or else when
+ * the finger is lifted. */
+const uint32_t SETTLE_MS = 30;
+/* A new touch this soon after a release continues the one before (a touch
+ * that broke up), so it does not act again. */
+const uint32_t REJOIN_MS = 90;
+/* Holding a -/+ button repeats it after HOLD_MS, every REPEAT_MS. */
+const uint32_t HOLD_MS = 450, REPEAT_MS = 110;
 
 void poll_touch() {
     int x, y;
@@ -871,7 +926,10 @@ void poll_touch() {
         if (!touch.down) {
             touch.down = true;
             touch.pressed = true;
+            touch.first_report = now;
+            touch.reports = 0;
         }
+        touch.reports++;
         touch.x = x;
         touch.y = y;
         touch.last_report = now;
@@ -880,6 +938,10 @@ void poll_touch() {
         touch.released = true;
     }
 }
+
+/* What each strip looked like when it was last sent to the LCD. */
+uint32_t strip_hash[(LCD_H + STRIP - 1) / STRIP];
+bool strip_sent[(LCD_H + STRIP - 1) / STRIP];
 
 void render() {
     cfg = shared_config();
@@ -892,6 +954,7 @@ void render() {
         lcd_set_landscape(land, flip);
         flipped = flip;
         set_layout(land);
+        memset(strip_sent, 0, sizeof(strip_sent));
     }
     st = shared_status();
     if (screen == WIFI) wi = shared_wifi();
@@ -922,8 +985,61 @@ void render() {
         else if (screen == RECEIVER) draw_receiver();
         else if (screen == WIFI) draw_wifi();
         else draw_advanced();
-        lcd_push_rows(strip_y, min(STRIP, scr_h - strip_y), scr_w, buf);
+        /* a strip that looks as it did the last time is not sent again */
+        int rows = min(STRIP, scr_h - strip_y), i = strip_y / STRIP;
+        uint32_t h = 2166136261u;
+        const uint32_t *w = (const uint32_t *)buf;
+        for (int n = scr_w * rows / 2; n > 0; n--) h = (h ^ *w++) * 16777619u;
+        if (!strip_sent[i] || h != strip_hash[i]) {
+            lcd_push_rows(strip_y, rows, scr_w, buf);
+            strip_hash[i] = h;
+            strip_sent[i] = true;
+        }
         poll_touch();
+    }
+}
+
+/* ---- screenshot of the main screen (graph and markers, without the buttons)
+ * to the microSD card: a 24-bit BMP, written bottom row first ---- */
+void save_screen() {
+    char name[16], message[40];
+    toast("保存中…", WHITE, 10000);
+    render();
+    int error = lcd_sd_create(name, sizeof(name));
+    if (error) {
+        toast(error == 1 ? "SDカードなし" : "保存できません", RED);
+        return;
+    }
+    const uint32_t row_bytes = scr_w * 3, size = 54 + row_bytes * scr_h; /* rows are multiples of 4 bytes */
+    uint8_t head[54] = {'B', 'M'};
+    auto put = [&](int at, uint32_t v, int n) {
+        for (int k = 0; k < n; k++) head[at + k] = v >> (8 * k);
+    };
+    put(2, size, 4), put(10, 54, 4), put(14, 40, 4), put(18, scr_w, 4), put(22, scr_h, 4);
+    put(26, 1, 2), put(28, 24, 2), put(34, row_bytes * scr_h, 4), put(38, 2835, 4), put(42, 2835, 4);
+    lcd_sd_write(head, sizeof(head));
+    static uint8_t row[LCD_H * 3];
+    capturing = true;
+    for (strip_y = (scr_h - 1) / STRIP * STRIP; strip_y >= 0; strip_y -= STRIP) {
+        memset(buf, 0, scr_w * STRIP * sizeof(uint16_t));
+        draw_main();
+        for (int r = min(STRIP, scr_h - strip_y) - 1; r >= 0; r--) {
+            const uint16_t *px = buf + r * scr_w;
+            for (int x = 0; x < scr_w; x++) {
+                uint16_t c = px[x];
+                row[3 * x] = (c & 31) * 255 / 31, row[3 * x + 1] = (c >> 5 & 63) * 255 / 63,
+                        row[3 * x + 2] = (c >> 11) * 255 / 31;
+            }
+            lcd_sd_write(row, row_bytes);
+        }
+        esp_task_wdt_reset();
+    }
+    capturing = false;
+    if (lcd_sd_close()) {
+        snprintf(message, sizeof(message), "保存 %s", name);
+        toast(message, GREEN);
+    } else {
+        toast("保存失敗", RED);
     }
 }
 
@@ -1034,8 +1150,8 @@ void bring_up() {
     cfg = shared_config();
     last_touch = millis();
     backlight = wanted_backlight(last_touch);
-    while (!lcd_board_begin()) {
-    }
+    while (!lcd_board_begin()) esp_task_wdt_reset();
+    memset(strip_sent, 0, sizeof(strip_sent));
     set_layout(false); /* the LCD set-up leaves it in portrait */
     flipped = false;
     read_battery();
@@ -1052,29 +1168,59 @@ void lcd_task(void *) {
     uint32_t last_draw = millis(), last_battery = last_draw, last_refresh = last_draw;
     bool dirty = true;
     bool waking = false; /* the touch that woke the screen does nothing else */
+    bool acted = false;  /* this touch has done its tap */
+    bool urgent = false; /* redraw at once (after a touch) */
+    uint32_t last_release = 0, repeat_at = 0;
+    Screen repeat_screen = MAIN;
+    /* The tap at the touched position: what a press on the current screen does. */
+    auto tap = [&]() {
+        cfg = shared_config();
+        repeatable = false;
+        if (screen == MAIN) press_main(touch.x, touch.y);
+        else if (screen == SETTINGS) press_settings(touch.x, touch.y);
+        else if (screen == RECEIVER) press_receiver(touch.x, touch.y);
+        else if (screen == WIFI) press_wifi(touch.x, touch.y);
+        else press_advanced(touch.x, touch.y);
+        cfg = shared_config(); /* a changed brightness applies at once */
+        dirty = urgent = true;
+    };
+    esp_task_wdt_add(nullptr);
     for (;;) {
+        esp_task_wdt_reset();
         poll_touch();
         if (touch.pressed) {
             touch.pressed = false;
             cfg = shared_config();
             waking = backlight < cfg.lcd_bright;
             last_touch = millis();
+            /* a touch that broke up for a moment goes on, it is no new tap */
+            acted = last_release && last_touch - last_release < REJOIN_MS;
             if (waking) {
                 update_backlight(last_touch);
             } else {
                 lcd_backlight(backlight); /* in case the expander lost it */
-                if (screen == MAIN && in_graph(touch.x, touch.y) && active >= 0) {
+                if (!acted && screen == MAIN && in_graph(touch.x, touch.y) && active >= 0) {
                     dragging = true;
                     drag_to(touch.x);
                 }
             }
-            dirty = true;
+            dirty = urgent = true;
         }
         if (touch.down) {
-            last_touch = millis();
+            uint32_t t = millis();
+            last_touch = t;
             if (dragging) {
+                int before = drag_tenths;
                 drag_to(touch.x);
-                dirty = true;
+                if (drag_tenths != before) dirty = urgent = true;
+            } else if (!waking && !acted && (touch.reports >= 2 || t - touch.first_report >= SETTLE_MS)) {
+                acted = true;
+                tap();
+                repeat_at = t + HOLD_MS;
+                repeat_screen = screen;
+            } else if (!waking && acted && repeatable && screen == repeat_screen && (int32_t)(t - repeat_at) >= 0) {
+                tap(); /* a -/+ button held down */
+                repeat_at = t + REPEAT_MS;
             }
         }
         if (touch.released) {
@@ -1083,16 +1229,22 @@ void lcd_task(void *) {
                 set_marker(drag_tenths);
                 dragging = false;
                 drag_tenths = -1;
-            } else if (!waking) {
-                cfg = shared_config();
-                if (screen == MAIN) press_main(touch.x, touch.y);
-                else if (screen == SETTINGS) press_settings(touch.x, touch.y);
-                else if (screen == RECEIVER) press_receiver(touch.x, touch.y);
-                else if (screen == WIFI) press_wifi(touch.x, touch.y);
-                else press_advanced(touch.x, touch.y);
-                cfg = shared_config(); /* a changed brightness applies at once */
+            } else if (!waking && !acted) {
+                tap(); /* a touch too short to settle */
             }
             waking = false;
+            acted = false;
+            repeatable = false;
+            last_release = millis() | 1;
+            dirty = urgent = true;
+        }
+        if (save_requested) {
+            save_requested = false;
+            save_screen();
+            dirty = urgent = true;
+        }
+        if (toast_text[0] && (int32_t)(millis() - toast_until) >= 0) {
+            toast_text[0] = '\0';
             dirty = true;
         }
         if (poll_button()) dirty = true;
@@ -1135,17 +1287,20 @@ void lcd_task(void *) {
         }
         update_backlight(now);
         if (backlight == 0) { /* screen off: nothing to draw */
-            vTaskDelay(pdMS_TO_TICKS(20));
+            vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
         /* a low battery blinks: redraw every half second */
         if (battery >= 0 && battery < BATTERY_LOW_PERCENT && now / 500 != last_draw / 500) dirty = true;
-        if (sliding || (dirty && now - last_draw >= 80) || now - last_draw >= 1000) {
+        /* at once after a touch; new sweep data at most every 80 ms */
+        if (sliding || urgent || (dirty && now - last_draw >= 80) || now - last_draw >= 1000) {
             render();
-            last_draw = now;
-            dirty = false;
+            last_draw = millis();
+            dirty = urgent = false;
         }
-        vTaskDelay(pdMS_TO_TICKS(20));
+        /* the touch panel is read every few ms, so that short or weak
+         * touches (through a case's window) are not missed */
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
 } // namespace

@@ -2,6 +2,7 @@
 /* Pin map, expander registers and the ST7789 / CST3530 set-up follow
  * Waveshare's ESP32-C5-Touch-LCD-2.8 Arduino examples (Apache-2.0). */
 #include "lcd_board.h"
+#include <SD.h>
 #include <SPI.h>
 #include <Wire.h>
 #include "config.h"
@@ -9,7 +10,8 @@
 unsigned lcd_expander_errors;
 
 namespace {
-const int PIN_SCLK = 6, PIN_MOSI = 7, PIN_LCD_CS = 10, PIN_LCD_DC = 9, PIN_SD_CS = 23;
+const int PIN_SCLK = 6, PIN_MOSI = 7, PIN_MISO = 8, PIN_LCD_CS = 10, PIN_LCD_DC = 9, PIN_SD_CS = 23;
+const uint32_t SD_HZ = 20000000;
 const int PIN_SDA = 0, PIN_SCL = 1;
 const uint32_t SPI_HZ = 80000000;
 
@@ -103,7 +105,7 @@ bool lcd_board_begin() {
     digitalWrite(PIN_LCD_CS, HIGH);
     digitalWrite(PIN_LCD_DC, HIGH);
     digitalWrite(PIN_SD_CS, HIGH); /* keep the microSD card off the bus */
-    spi.begin(PIN_SCLK, -1, PIN_MOSI, PIN_LCD_CS);
+    spi.begin(PIN_SCLK, PIN_MISO, PIN_MOSI, -1); /* MISO: the microSD card (the LCD is write-only) */
 
     exio_set(EXIO_LCD_RST, false);
     delay(50);
@@ -169,6 +171,54 @@ bool lcd_user_button() { return false; }
 void lcd_push_rows(int y, int rows, int width, const uint16_t *pixels) {
     lcd_window(0, y, width - 1, y + rows - 1);
     lcd_write(true, (const uint8_t *)pixels, (size_t)width * rows * 2);
+}
+
+/* ---- microSD card: mounted only while a screenshot is written, so the card
+ * can be put in or taken out at any other time ---- */
+static File sd_file;
+static bool sd_failed;
+
+int lcd_sd_create(char *name, size_t size) {
+    SD.end();
+    if (!SD.begin(PIN_SD_CS, spi, SD_HZ) || SD.cardType() == CARD_NONE) {
+        SD.end();
+        return 1;
+    }
+    /* the number after the highest SCANnnnn.BMP in the root */
+    unsigned next = 1;
+    File root = SD.open("/");
+    for (File f = root.openNextFile(); f; f = root.openNextFile()) {
+        unsigned n;
+        char tail;
+        const char *base = f.name();
+        if (*base == '/') base++;
+        if (!f.isDirectory() && sscanf(base, "SCAN%4u.BM%c", &n, &tail) == 2 && n >= next) next = n + 1;
+        f.close();
+    }
+    root.close();
+    snprintf(name, size, "SCAN%04u.BMP", next % 10000);
+    char path[24];
+    snprintf(path, sizeof(path), "/%s", name);
+    sd_file = SD.open(path, FILE_WRITE);
+    sd_failed = false;
+    if (!sd_file) {
+        SD.end();
+        return 2;
+    }
+    return 0;
+}
+
+bool lcd_sd_write(const uint8_t *data, size_t size) {
+    if (!sd_file || sd_failed) return false;
+    if (sd_file.write(data, size) != size) sd_failed = true;
+    return !sd_failed;
+}
+
+bool lcd_sd_close() {
+    if (sd_file) sd_file.close();
+    SD.end();
+    digitalWrite(PIN_SD_CS, HIGH);
+    return !sd_failed;
 }
 
 int lcd_battery_raw() {

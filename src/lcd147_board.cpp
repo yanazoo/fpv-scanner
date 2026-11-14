@@ -98,5 +98,10 @@ void lcd_push_rows(int y, int rows, int width, const uint16_t *pixels) {
 
 bool lcd_touch(int *, int *) { return false; }
 int lcd_battery_raw() { return -1; }
+/* no screenshots on this board (no touch screen to ask for one) */
+int lcd_sd_create(char *, size_t) { return 1; }
+bool lcd_sd_write(const uint8_t *, size_t) { return false; }
+bool lcd_sd_close() { return false; }
+
 bool lcd_user_button() { return digitalRead(PIN_BOOT) == LOW; }
 #endif

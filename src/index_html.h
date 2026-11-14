@@ -23,7 +23,7 @@ td.ch{cursor:pointer}#mt td:first-child,#mt th:first-child{width:1%;white-space:
 <header><span id="info">-</span><span id="err" class="err"></span><span id="bat"></span><span id="st">接続中…</span></header>
 <main>
 <div class="row">
- <label><input type="checkbox" id="hold">ピークホールド</label><button id="preset">リセット</button><label><input type="checkbox" id="avg">平均</label>
+ <label><input type="checkbox" id="hold">ピークホールド</label><button id="preset">リセット</button><label><input type="checkbox" id="avg">平均</label><button id="shot">画像保存</button>
  <label>上限 <input type="number" id="ytop"> dBm</label><label>範囲 <input type="number" id="yrng"> dB</label>
 </div>
 <canvas id="cv"></canvas>
@@ -85,6 +85,11 @@ td.ch{cursor:pointer}#mt td:first-child,#mt th:first-child{width:1%;white-space:
 <div id="wst" style="font-size:13px;margin-top:2px"></div></div>
 
 </main>
+<div id="shotbox" hidden style="position:fixed;inset:0;background:#000d;z-index:9;overflow:auto;padding:10px;text-align:center">
+ <div class="row" style="justify-content:center"><a id="shotdl" style="color:#79c0ff;border:1px solid #30363d;border-radius:6px;padding:6px 12px;text-decoration:none">ダウンロード</a><button id="shotx">閉じる</button></div>
+ <div style="font-size:12px;color:#8b949e;margin:6px 0">保存できないときは、画像を長押しして保存してください</div>
+ <img id="shotimg" style="max-width:100%;border:1px solid #30363d">
+</div>
 <script>
 const BANDS={A:[5865,5845,5825,5805,5785,5765,5745,5725],B:[5733,5752,5771,5790,5809,5828,5847,5866],
 E:[5705,5685,5665,5645,5885,5905,5925,5945],F:[5740,5760,5780,5800,5820,5840,5860,5880],R:[5658,5695,5732,5769,5806,5843,5880,5917]};
@@ -180,6 +185,22 @@ function display(){const top=Math.round(+$('ytop').value),yr=Math.round(+$('yrng
  clearTimeout(dispTimer);dispTimer=setTimeout(()=>{if(ws&&ws.readyState===1)ws.send(`cfg hold=${cfg.hold} avg=${cfg.avg} ytop=${top} yrange=${yr}`)},500)}
 ['hold','avg','ytop','yrng'].forEach(id=>$(id).oninput=display);
 $('preset').onclick=()=>{peak=null;redraw()};
+// ---- save the graph with the marker table as a PNG: shown in an overlay with a download link
+// (the iPhone's login window cannot download, there the image is saved by a long press)
+function two(n){return String(n).padStart(2,'0')}
+$('shot').onclick=()=>{draw();const r=devicePixelRatio||1,pad=8*r,lh=20*r,W=cv.width,head=lh+pad,tab=5*lh+pad,
+ c=document.createElement('canvas'),g=c.getContext('2d'),d=new Date(),
+ stamp=`${d.getFullYear()}${two(d.getMonth()+1)}${two(d.getDate())}_${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`;
+ c.width=W;c.height=head+cv.height+tab;g.fillStyle='#0d1117';g.fillRect(0,0,c.width,c.height);
+ g.font=`${13*r}px sans-serif`;g.textBaseline='middle';g.fillStyle='#e6edf3';
+ g.fillText(`FPV Scanner  ${f0}-${f1}MHz  ${d.getFullYear()}/${two(d.getMonth()+1)}/${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`,pad,head/2);
+ g.drawImage(cv,0,head);
+ const y0=head+cv.height+pad/2,col=[pad,W*0.2,W*0.48,W*0.7];g.fillStyle='#8b949e';
+ ['マーカー','dBm','ch','MHz'].forEach((t,i)=>g.fillText(t,col[i],y0+lh/2));
+ markers.forEach((f,m)=>{const lv=f===null?null:level(f),y=y0+(m+1)*lh+lh/2;g.fillStyle=MCOL[m];
+  ['M'+(m+1),lv===null?'-':lv.toFixed(1),f===null?'-':nearestCh(f),f===null?'-':f.toFixed(1)].forEach((t,i)=>g.fillText(t,col[i],y))});
+ const url=c.toDataURL('image/png');$('shotimg').src=url;$('shotdl').href=url;$('shotdl').download=`fpv_${stamp}_${f0}-${f1}.png`;$('shotbox').hidden=false};
+$('shotx').onclick=()=>{$('shotbox').hidden=true;$('shotimg').removeAttribute('src')};
 for(const b of BK){const l=document.createElement('label');l.innerHTML=`<input type="checkbox" data-b="${b}"><span style="color:${BCOL[b]}">${b}</span> `;
  l.firstChild.onchange=()=>$('applyb').classList.add('dirty');$('bandsel').appendChild(l)}
 $('applyb').onclick=()=>{let m=0;document.querySelectorAll('#bandsel input').forEach(i=>{if(i.checked)m|=1<<BK.indexOf(i.dataset.b)});apply(`cfg bands=${m}`,$('applyb'))};
