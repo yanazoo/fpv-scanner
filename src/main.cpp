@@ -563,8 +563,10 @@ static bool noise_store_requested, noise_clear_requested;
  * "sd put NAME", then binary "SDW1" + u32 offset + data (up to 4 KB), each
  *                         answered {"type":"sdack","off":next offset}
  * "sd end"             -> {"type":"sdsaved","name":NAME}
- * "sd get NAME"        -> binary "SDF1" + u32 offset + u32 size + data, in
- *                         pieces sent as the page takes them
+ * "sd get NAME OFFSET" -> binary "SDF1" + u32 offset + u32 size + data (up
+ *                         to 2 KB): one piece per request, so that only one
+ *                         is ever waiting to be sent (the page asks for the
+ *                         next when it has one, and again when one is lost)
  * "sd ren OLD NEW", "sd del NAME" -> a new list
  * Errors: {"type":"sderr","op":...,"err":SdResult}. The names are checked
  * by sd_store (letters, digits . _ - only, so they need no escaping).
@@ -577,6 +579,7 @@ static bool noise_store_requested, noise_clear_requested;
  * buffer for every job and the file list is held only while it is made. */
 #if SD_SLOT
 static const size_t SD_PIECE = 2048; /* a download piece: below what writable() promises */
+static const size_t WS_HEAD = WEBSOCKETS_MAX_HEADER_SIZE; /* room for the frame header: no copy is made */
 static const size_t SD_PUT_MAX = 4096;
 enum SdJobOp { JOB_LIST, JOB_PUT, JOB_GET, JOB_REN, JOB_DEL };
 enum SdJobState { JOB_IDLE, JOB_QUEUED, JOB_DONE };
@@ -588,7 +591,7 @@ static struct {
     uint32_t offset, total;
     size_t size, got;
     int result, count;
-    uint8_t data[12 + SD_PUT_MAX]; /* put: the data; get: "SDF1" header + the piece; list: the JSON */
+    uint8_t data[WS_HEAD + 12 + SD_PUT_MAX]; /* put: the data; get: room, "SDF1" header, the piece; list: the JSON */
 } job;
 static struct {
     uint8_t put_client = 255, get_client = 255;
@@ -619,7 +622,7 @@ static void run_job() {
     case JOB_PUT: job.result = sd_write(job.a, job.offset, job.data, job.size); break;
     case JOB_GET:
         job.total = 0;
-        job.result = sd_read(job.a, job.offset, job.data + 12, SD_PIECE, &job.got, &job.total);
+        job.result = sd_read(job.a, job.offset, job.data + WS_HEAD + 12, SD_PIECE, &job.got, &job.total);
         break;
     case JOB_REN: job.result = sd_rename(job.a, job.b); break;
     case JOB_DEL: job.result = sd_remove(job.a); break;
@@ -669,9 +672,11 @@ static void handle_sd(uint8_t client, const char *text) {
         snprintf(out, sizeof(out), "{\"type\":\"sdsaved\",\"name\":\"%s\"}", sdx.put_name);
         ws.sendTXT(client, out);
     } else if (sscanf(text, "sd get %63s", a) == 1) {
+        unsigned long offset = 0;
+        sscanf(text, "sd get %*s %lu", &offset);
         if (!sd_valid_name(a)) return sd_error(client, "get", SD_BAD_NAME);
         sdx.get_client = client; /* one download at a time: a new one replaces it */
-        sdx.get_offset = 0;
+        sdx.get_offset = offset;
         strlcpy(sdx.get_name, a, sizeof(sdx.get_name));
     } else if (sscanf(text, "sd ren %63s %63s", a, b) == 2) {
         if (!sd_free(client, "ren")) return;
@@ -733,12 +738,12 @@ static void sd_poll() {
                 sd_error(c, "get", job.result ? job.result : SD_FAIL);
                 break;
             }
-            memcpy(job.data, "SDF1", 4);
-            put32(job.data + 4, job.offset);
-            put32(job.data + 8, job.total);
-            ws.sendBIN(c, job.data, 12 + job.got);
-            sdx.get_offset = job.offset + job.got;
-            if (sdx.get_offset >= job.total) sdx.get_client = 255; /* (an empty file: one empty piece) */
+            memcpy(job.data + WS_HEAD, "SDF1", 4);
+            put32(job.data + WS_HEAD + 4, job.offset);
+            put32(job.data + WS_HEAD + 8, job.total);
+            /* (a piece that could not be sent is asked for again by the page) */
+            ws.sendBIN(c, job.data, 12 + job.got, true);
+            sdx.get_client = 255; /* the page asks for the next one */
             break;
         case JOB_REN:
         case JOB_DEL:

@@ -210,7 +210,7 @@ $('shot').onclick=()=>{draw();const r=devicePixelRatio||1,pad=8*r,lh=20*r,W=cv.w
 function showImage(url,name,msg){if(shotUrl)URL.revokeObjectURL(shotUrl);shotUrl=url.startsWith('blob:')?url:'';
  $('shotimg').src=url;$('shotdl').href=url;$('shotdl').download=name;shotMsg(msg);$('shotbox').hidden=false}
 let shotUrl='';const shotMsg=(t,c)=>{$('shotmsg').textContent=t;$('shotmsg').style.color=c||'#8b949e'};
-$('shotx').onclick=()=>{$('shotbox').hidden=true;$('shotimg').removeAttribute('src');if(shotUrl)URL.revokeObjectURL(shotUrl);shotUrl='';dl=null};
+$('shotx').onclick=()=>{$('shotbox').hidden=true;$('shotimg').removeAttribute('src');if(shotUrl)URL.revokeObjectURL(shotUrl);shotUrl='';if(dl)clearTimeout(dl.timer);dl=null};
 // ---- the microSD card (touch LCD board): the web page's graphs (.png) and the LCD's screenshots (.bmp).
 // Uploads and downloads go in pieces over the WebSocket: "SDW1"/"SDF1" + offset (+ size) + data.
 const SDERR={1:'SDカードがありません',2:'失敗しました',3:'本体が応答しません（もう一度）',4:'使えないファイル名です'};
@@ -220,16 +220,20 @@ function sdPut(blob,name){blob.arrayBuffer().then(b=>{up={name,bytes:new Uint8Ar
 function upNext(off){if(!up)return;const n=up.bytes.length;if(off>=n){send('sd end');return}
  const k=Math.min(4096,n-off),b=new Uint8Array(8+k);b.set([83,68,87,49]);new DataView(b.buffer).setUint32(4,off,true);b.set(up.bytes.subarray(off,off+k),8);
  send(b.buffer);shotMsg(`SDカードに保存中… ${Math.round(off/n*100)}%`)}
+// Downloads go piece by piece: each one asked for when the last has come; one that does not
+// come within 4 s is asked for again (5 times at most).
+function sdGet(){if(!dl)return;clearTimeout(dl.timer);if(!send(`sd get ${dl.name} ${dl.got}`)){dl=null;return shotMsg('本体に接続されていないため読み込めませんでした','#f85149')}
+ dl.timer=setTimeout(()=>{if(!dl)return;if(++dl.tries>5){dl=null;return shotMsg('読み込めませんでした（応答なし）','#f85149')}sdGet()},4000)}
 function sdPiece(buf){if(!dl)return;const v=new DataView(buf),off=v.getUint32(4,true),total=v.getUint32(8,true);
- if(!dl.bytes)dl.bytes=new Uint8Array(total);dl.bytes.set(new Uint8Array(buf,12),off);dl.got=off+buf.byteLength-12;
- if(dl.got<total){shotMsg(`読み込み中… ${Math.round(dl.got/total*100)}%`);return}
- const type=/\.bmp$/i.test(dl.name)?'image/bmp':'image/png';showImage(URL.createObjectURL(new Blob([dl.bytes],{type})),dl.name,dl.name);dl=null}
+ if(off!==dl.got)return;if(!dl.bytes)dl.bytes=new Uint8Array(total);dl.bytes.set(new Uint8Array(buf,12),off);dl.got=off+buf.byteLength-12;dl.tries=0;
+ if(dl.got<total){shotMsg(`読み込み中… ${Math.round(dl.got/total*100)}%`);return sdGet()}
+ clearTimeout(dl.timer);const type=/\.bmp$/i.test(dl.name)?'image/bmp':'image/png';showImage(URL.createObjectURL(new Blob([dl.bytes],{type})),dl.name,dl.name);dl=null}
 function onSd(j){if(j.type==='sdack')return upNext(j.off);
  if(j.type==='sdsaved'){up=null;shotMsg('SDカードに保存しました: '+j.name,'#3fb950');return sdList()}
  if(j.type==='sdlist'){sdFiles=j.files||[];sdEdit=sdDel=null;sdMsg(j.err?SDERR[j.err]||'読み込めません':sdFiles.length?'':'保存した画像はありません',j.err?'#f85149':'');return renderSd()}
  if(j.type==='sderr'){const t=SDERR[j.err]||'失敗しました';
   if(j.op==='put'){up=null;shotMsg('SDカードに保存できませんでした（'+t+'）。ダウンロードで保存してください','#f85149')}
-  else if(j.op==='get'){dl=null;shotMsg('読み込めませんでした（'+t+'）','#f85149')}
+  else if(j.op==='get'){if(dl)clearTimeout(dl.timer);dl=null;shotMsg('読み込めませんでした（'+t+'）','#f85149')}
   else if(j.op==='list')sdMsg('一覧を読み込めませんでした: '+t,'#f85149');
   else sdMsg((j.op==='ren'?'名前を変更できませんでした（同じ名前があるときも）: ':'削除できませんでした: ')+t,'#f85149')}}
 const sdMsg=(t,c)=>{$('sdmsg').textContent=t;$('sdmsg').style.color=c||'#8b949e'};
@@ -244,7 +248,7 @@ function renderSd(){$('sdtab').innerHTML=sdFiles.length?'<tr><th>ファイル名
  return `<tr><td style="text-align:left;word-break:break-all">${name}</td><td>${kb(f.s)}</td><td style="white-space:nowrap">${ops}</td></tr>`}).join(''):''}
 $('sdtab').onclick=e=>{const b=e.target.closest('button');if(!b)return;const op=b.dataset.op,f=sdFiles[+b.dataset.i];
  if(op==='cancel'){sdEdit=sdDel=null;renderSd()}
- else if(op==='get'){if(!send('sd get '+f.n))return sdMsg('本体に接続されていません','#f85149');dl={name:f.n,bytes:null,got:0};
+ else if(op==='get'){if(!ws||ws.readyState!==1)return sdMsg('本体に接続されていません','#f85149');dl={name:f.n,bytes:null,got:0,tries:0};sdGet();
   $('shotimg').removeAttribute('src');$('shotdl').removeAttribute('href');shotMsg('読み込み中…');$('shotbox').hidden=false}
  else if(op==='ren'){sdEdit=+b.dataset.i;sdDel=null;renderSd();$('sdnew').focus()}
  else if(op==='ok'){const v=$('sdnew').value.trim(),ext=f.n.slice(f.n.lastIndexOf('.'));
@@ -299,7 +303,7 @@ function onFrame(buf){if(new DataView(buf).getUint32(0,true)===0x31464453)return
  const w=Math.max(...t)/2-84.3>(cfg.warn??-5)?'ゲイン下げて':'';if(w!==warn){warn=w;showErr()}redraw()}
 function connect(){ws=new WebSocket('ws://'+location.hostname+':81/');ws.binaryType='arraybuffer';lastMsg=Date.now();
  ws.onmessage=e=>{lastMsg=Date.now();if(typeof e.data!=='string')return onFrame(e.data);const j=JSON.parse(e.data);j.type==='wifipass'?showPass(j):j.type==='status'?onStatus(j):onSd(j)};
- ws.onclose=()=>{if(up)shotMsg('接続が切れたためSDカードに保存できませんでした','#f85149');if(dl)shotMsg('接続が切れたため読み込めませんでした','#f85149');up=dl=null;sdAsked=false;$('st').textContent='再接続中';$('st').className='ng';setTimeout(connect,1000)}}
+ ws.onclose=()=>{if(up)shotMsg('接続が切れたためSDカードに保存できませんでした','#f85149');if(dl){clearTimeout(dl.timer);shotMsg('接続が切れたため読み込めませんでした','#f85149')}up=dl=null;sdAsked=false;$('st').textContent='再接続中';$('st').className='ng';setTimeout(connect,1000)}}
 setInterval(()=>{if(ws&&ws.readyState===1&&Date.now()-lastMsg>5000)ws.close()},1000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&ws&&Date.now()-lastMsg>5000)ws.close()});
 window.onresize=resize;resize();renderFpv();connect();
