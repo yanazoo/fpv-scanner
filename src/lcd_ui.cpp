@@ -509,9 +509,6 @@ int row_text_y(int r) { return row_y(r) + (BH - 16) / 2; }
 int title_w() { return min(72, (scr_w - 3 * 4) / 4); }
 Rect title_button(int i) { return {scr_w - title_w() - i * (title_w() + 4), 0, title_w(), 34}; }
 #define BTN_BACK title_button(0)
-#define BTN_ADVANCED title_button(1)
-#define BTN_RECEIVER title_button(2)
-#define BTN_WIFI title_button(3)
 /* columns i .. j - 1 of n equal columns (2 px gaps) in row r */
 Rect cell(int r, int i, int j, int n) {
     int x0 = scr_w - AREA, xa = x0 + i * (AREA + 2) / n, xb = x0 + j * (AREA + 2) / n - 2;
@@ -539,13 +536,16 @@ void four(int r, const char *const l[4]) {
     for (int i = 0; i < 4; i++) button(col(r, i), l[i]);
 }
 
-void draw_title(const char *title, int buttons) {
-    /* the title only where the buttons leave room (not on 240 px with three) */
-    if (scr_w - buttons * (title_w() + 4) >= 72) text(4, 9, title, WHITE);
+/* The settings page's row of five, left to right: 詳細 受信 Wi-Fi SD 戻る
+ * (i = 0 is 戻る, at the right). */
+int menu_w() { return min(72, (scr_w - 4 * 4) / 5); }
+Rect menu_button(int i) { return {scr_w - menu_w() - i * (menu_w() + 4), 0, menu_w(), 34}; }
+const char *const MENU_LABEL[5] = {"戻る", "SD", "Wi-Fi", "受信", "詳細"};
+
+/* The other pages: their title and 戻る (back to the settings page). */
+void draw_title(const char *title) {
+    text(4, 9, title, WHITE);
     button(BTN_BACK, "戻る");
-    if (buttons > 1) button(BTN_ADVANCED, "詳細");
-    if (buttons > 2) button(BTN_RECEIVER, "受信");
-    if (buttons > 3) button(BTN_WIFI, "Wi-Fi");
 }
 
 /* ---- settings (first page): span presets, start, stop, gain, bands ----
@@ -563,7 +563,8 @@ const char *const MHZ_STEP[4] = {"-10", "-1", "+1", "+10"};
 
 void draw_settings() {
     char s[32];
-    draw_title("設定", 4);
+    if (scr_w - 5 * (menu_w() + 4) >= 72) text(4, 9, "設定", WHITE);
+    for (int i = 0; i < 5; i++) button(menu_button(i), MENU_LABEL[i]);
     snprintf(s, sizeof(s), "%u-%u", cfg.start_mhz, cfg.stop_mhz);
     label(0, "スパン", s);
     for (int i = 0; i < PRESETS; i++)
@@ -592,7 +593,7 @@ const char *const STEP_NAME[] = {"40", "30", "15", "7.5"};
 
 void draw_receiver() {
     char s[32];
-    draw_title("受信設定", 1);
+    draw_title("受信設定");
     label(0, "ステップ");
     for (int i = 0; i < 4; i++) button(col(0, i), STEP_NAME[i], (int)cfg.rate_code == i);
     snprintf(s, sizeof(s), "%u", cfg.dwell_ms);
@@ -627,7 +628,7 @@ void sleep_text(int seconds, char *out, size_t size) {
 
 void draw_advanced() {
     char s[32];
-    draw_title("詳細設定", 1);
+    draw_title("詳細設定");
     /* orientation, and turned by 180 degrees (either orientation) */
     label(0, "画面の向き");
     button(cell(0, 0, 1, 3), "縦", !cfg.lcd_land); /* three equal buttons, same edges as the rows */
@@ -652,9 +653,6 @@ void draw_advanced() {
     label(4, "ボタン", s);
     button(half(4, 0), "-1秒");
     button(half(4, 1), "+1秒");
-    /* the images on the microSD card */
-    label(5, "保存画像");
-    button(half(5, 1), "一覧");
 }
 
 /* ---- Wi-Fi screen: on / off, and the settings made on the web page
@@ -688,7 +686,7 @@ int text_wrap(int x, int y, int max_w, const char *s, uint16_t c, int line_h) {
 
 void draw_wifi() {
     char s[48];
-    draw_title("Wi-Fi設定", 1);
+    draw_title("Wi-Fi設定");
     label(0, "Wi-Fi");
     button(half(0, 0), "ON", wi.on);
     button(half(0, 1), "OFF", !wi.on);
@@ -770,7 +768,7 @@ void close_files() {
     free(files);
     files = nullptr;
     file_count = 0;
-    screen = ADVANCED;
+    screen = SETTINGS; /* (opened with the settings page's SD button) */
 }
 
 void close_view() {
@@ -1124,7 +1122,6 @@ void press_advanced(int x, int y) {
     else if (half(2, 1).in(x, y)) step("cfg lbright=%d", min(cfg.lcd_bright + 10, 100));
     else if (half(4, 0).in(x, y)) step("cfg lpanel=%d", max(cfg.lcd_panel - 1, 0));
     else if (half(4, 1).in(x, y)) step("cfg lpanel=%d", min(cfg.lcd_panel + 1, 30));
-    else if (half(5, 1).in(x, y)) open_files();
     else
         for (int i = 0; i < 4; i++) {
             if (col(1, i).in(x, y)) step("cfg warn=%d", constrain(cfg.warn_dbfs + WARN[i], -60, 0));
@@ -1171,10 +1168,11 @@ void press_settings(int x, int y) {
     static const int MHZ[] = {-10, -1, 1, 10}, GAIN[] = {-10, -1, 1, 10};
     char line[32];
     int a = cfg.start_mhz, b = cfg.stop_mhz;
-    if (BTN_BACK.in(x, y)) screen = MAIN;
-    else if (BTN_ADVANCED.in(x, y)) screen = ADVANCED;
-    else if (BTN_RECEIVER.in(x, y)) screen = RECEIVER;
-    else if (BTN_WIFI.in(x, y)) screen = WIFI;
+    if (menu_button(0).in(x, y)) screen = MAIN;
+    else if (menu_button(1).in(x, y)) open_files();
+    else if (menu_button(2).in(x, y)) screen = WIFI;
+    else if (menu_button(3).in(x, y)) screen = RECEIVER;
+    else if (menu_button(4).in(x, y)) screen = ADVANCED;
     else {
         for (int i = 0; i < PRESETS; i++)
             if (preset_button(i).in(x, y)) set_span(PRESET[i][0], PRESET[i][1]);
