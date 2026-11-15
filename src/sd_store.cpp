@@ -83,7 +83,7 @@ int do_read(const char *name, uint32_t offset, uint8_t *buf, size_t size, size_t
         path_of(name, path);
         /* whole sectors at a time when memory allows (the LCD's viewer reads
          * a lot): much quicker than 512 bytes at a time */
-        reader = open_file(path, FILE_READ, ESP.getFreeHeap() > 30000 ? 4096 : 512);
+        reader = open_file(path, FILE_READ, heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) > 16384 ? 4096 : 512);
         if (!reader) return SD_FAIL;
         strlcpy(reader_name, name, sizeof(reader_name));
     }
@@ -276,6 +276,28 @@ bool sd_finish() {
     return true;
 }
 
+int sd_list_json(char *out, size_t size, int *count) {
+    *count = 0;
+    out[0] = '\0';
+    if (!mount()) return SD_NO_CARD;
+    close_reader();
+    File root = SD.open("/");
+    if (!root) return SD_FAIL;
+    size_t n = 0;
+    for (File f = root.openNextFile(); f; f = root.openNextFile()) {
+        const char *base = f.name();
+        if (*base == '/') base++;
+        if (!f.isDirectory() && sd_valid_name(base) && n + 100 < size) {
+            n += snprintf(out + n, size - n, "%s{\"n\":\"%s\",\"s\":%lu}", *count ? "," : "", base,
+                          (unsigned long)f.size());
+            ++*count;
+        }
+        f.close();
+    }
+    root.close();
+    return SD_OK;
+}
+
 /* (LCD task: reads the folder itself, without a list of every file) */
 int sd_next_scan_name(char *name, size_t size) {
     if (!mount()) return SD_NO_CARD;
@@ -304,6 +326,7 @@ int sd_write(const char *, uint32_t, const uint8_t *, size_t) { return SD_NO_CAR
 int sd_rename(const char *, const char *) { return SD_NO_CARD; }
 int sd_remove(const char *) { return SD_NO_CARD; }
 int sd_next_scan_name(char *, size_t) { return SD_NO_CARD; }
+int sd_list_json(char *out, size_t, int *count) { return *count = 0, out[0] = '\0', SD_NO_CARD; }
 int sd_create(const char *) { return SD_NO_CARD; }
 bool sd_append(const uint8_t *, size_t) { return false; }
 bool sd_finish() { return false; }

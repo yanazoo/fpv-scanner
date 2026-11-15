@@ -230,8 +230,8 @@ function sdPiece(buf){if(!dl)return;const v=new DataView(buf),off=v.getUint32(4,
  if(dl.got<total){shotMsg(`読み込み中… ${Math.round(dl.got/total*100)}%`);return sdGet()}
  clearTimeout(dl.timer);const type=/\.bmp$/i.test(dl.name)?'image/bmp':'image/png';showImage(URL.createObjectURL(new Blob([dl.bytes],{type})),dl.name,dl.name);dl=null}
 function onSd(j){if(j.type==='sdack')return upNext(j.off);
- if(j.type==='sdsaved'){up=null;shotMsg('SDカードに保存しました: '+j.name,'#3fb950');return sdList()}
- if(j.type==='sdlist'){sdFiles=j.files||[];sdEdit=sdDel=null;sdMsg(j.err?SDERR[j.err]||'読み込めません':sdFiles.length?'':'保存した画像はありません',j.err?'#f85149':'');return renderSd()}
+ if(j.type==='sdsaved'){up=null;shotMsg('SDカードに保存しました: '+j.name,'#3fb950');return sdFiles.length?sdList():0}
+ if(j.type==='sdlist'){sdFiles=(j.files||[]).sort((a,b)=>a.n.toLowerCase()<b.n.toLowerCase()?-1:1);sdEdit=sdDel=null;sdMsg(j.err?SDERR[j.err]||'読み込めません':sdFiles.length?'':'保存した画像はありません',j.err?'#f85149':'');return renderSd()}
  if(j.type==='sderr'){const t=SDERR[j.err]||'失敗しました';
   if(j.op==='put'&&j.err===3&&up&&++up.tries<=3){shotMsg('SDカードに保存中…（やり直し）');setTimeout(upStart,500);return}
   if(j.op==='put'){up=null;shotMsg('SDカードに保存できませんでした（'+t+'）。ダウンロードで保存してください','#f85149')}
@@ -288,7 +288,7 @@ function onStatus(s){
  cfg=s;if(first)fillForm(s);
  $('st').textContent=s.linked?'C5接続':'C5未接続';$('st').className=s.linked?'ok':'ng';
  $('info').textContent=`${s.start}-${s.stop}MHz ${s.steps}step ${s.sweep_ms}ms（切替${s.tune_ms} 測定${s.measure_ms}）`;$('nst').textContent=s.noise?'保存済み':'';
- $('sdbox').hidden=!s.sd;if(s.sd){if(!sdAsked){sdAsked=true;sdList()}}
+ $('sdbox').hidden=!s.sd;if(s.sd&&!sdAsked){sdAsked=true;if(!sdFiles.length)sdMsg('「一覧を更新」で表示します')}
  $('lcdbox').hidden=!s.lcd;if(s.lcd&&!$('applyl').classList.contains('dirty')){$('lbright').value=s.lbright;$('lsleep').value=s.lsleep;$('lflip').checked=!!s.lflip}
  // Battery of the LCD build (-1: none, as on the S3).
  const b=s.bat??-1;$('bat').textContent=b<0?'':`電池${b}%`;$('bat').className=b<0?'':b<(s.bat_low??10)?'lo':b<50?'mid':'hi';

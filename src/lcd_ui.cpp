@@ -20,6 +20,7 @@
 #include "lcd_board.h"
 #include "lcd_font.h"
 #include "sd_store.h"
+#include <algorithm>
 #include "shared.h"
 
 namespace {
@@ -42,7 +43,7 @@ const uint16_t BANDS[5][8] = {
 uint16_t dim(uint16_t c) { return (c >> 1) & 0x7BEF; }
 
 /* ---- drawing into the current strip ---- */
-const int STRIP = 40;
+const int STRIP = 20; /* (12.8 KB: 40 rows took memory that Wi-Fi needs with two pages open) */
 uint16_t *buf; /* STRIP rows of the widest screen (320) */
 int strip_y;
 /* Logical screen size: 240x320 portrait, 320x240 landscape (main screen). */
@@ -750,10 +751,19 @@ Rect file_row(int i) { return {0, FILE_Y + i * file_row_h(), scr_w, file_row_h()
 #define BTN_FILES_DOWN title_button(1)
 #define BTN_FILES_UP title_button(2)
 
+bool is_bmp(const char *name);
+/* The list's order: the BMPs (the LCD's own screenshots, which it shows)
+ * first, then the PNGs, each by name. */
+bool file_before(const SdEntry &a, const SdEntry &b) {
+    bool ba = is_bmp(a.name), bb = is_bmp(b.name);
+    return ba != bb ? ba : strcasecmp(a.name, b.name) < 0;
+}
+
 void open_files() {
     if (!files) files = (SdEntry *)malloc(FILES_MAX * sizeof(SdEntry));
     file_count = 0;
     file_error = files ? sd_list(files, FILES_MAX, &file_count) : SD_FAIL;
+    if (!file_error) std::stable_sort(files, files + file_count, file_before);
     file_top = 0;
     screen = FILES;
 }
@@ -767,8 +777,8 @@ void list_rename(const char *from, const char *to, uint32_t size) {
     strlcpy(files[i].name, to, sizeof(files[i].name));
     files[i].size = size;
     /* back into name order */
-    for (; i > 0 && strcasecmp(files[i - 1].name, files[i].name) > 0; i--) std::swap(files[i - 1], files[i]);
-    for (; i + 1 < file_count && strcasecmp(files[i].name, files[i + 1].name) > 0; i++) std::swap(files[i], files[i + 1]);
+    for (; i > 0 && file_before(files[i], files[i - 1]); i--) std::swap(files[i - 1], files[i]);
+    for (; i + 1 < file_count && file_before(files[i + 1], files[i]); i++) std::swap(files[i], files[i + 1]);
 }
 void list_remove(const char *name) {
     int i = 0;
