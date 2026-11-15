@@ -101,11 +101,19 @@ int do_write(const char *name, uint32_t offset, const uint8_t *data, size_t size
     char path[70];
     path_of(name, path);
     File f = open_file(path, offset ? FILE_APPEND : FILE_WRITE);
-    if (!f) return SD_FAIL;
+    if (!f) {
+        Serial.printf("SD: cannot open %s (heap %lu)\n", name, (unsigned long)ESP.getFreeHeap());
+        return SD_FAIL;
+    }
     /* a piece must follow the file as it is (the library's size of a file
      * it has just made is not to be trusted: a new file starts empty) */
-    bool ok = (!offset || f.size() == offset) && f.write(data, size) == size;
+    size_t was = offset ? f.size() : 0, wrote = 0;
+    bool ok = was == offset && (wrote = f.write(data, size)) == size;
     f.close();
+    if (!ok)
+        Serial.printf("SD: write %s at %lu failed (file %lu, wrote %u of %u, heap %lu)\n", name,
+                      (unsigned long)offset, (unsigned long)was, (unsigned)wrote, (unsigned)size,
+                      (unsigned long)ESP.getFreeHeap());
     return ok ? SD_OK : SD_FAIL;
 }
 

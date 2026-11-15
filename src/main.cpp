@@ -692,10 +692,13 @@ static void sd_put_piece(uint8_t client, const uint8_t *data, size_t length) {
     uint32_t offset;
     memcpy(&offset, data + 4, 4);
     if (sdx.put_client != client || offset != sdx.put_offset || length <= 8 || length - 8 > SD_PUT_MAX) {
+        Serial.printf("SD: upload piece at %lu refused (expected %lu)\n", (unsigned long)offset,
+                      (unsigned long)sdx.put_offset);
         sdx.put_client = 255;
         return sd_error(client, "put", SD_FAIL);
     }
-    if (!sd_free(client, "put")) {
+    if (!sd_free(client, "put")) { /* (the page starts the upload again) */
+        Serial.println("SD: upload piece while busy");
         sdx.put_client = 255;
         return;
     }
@@ -719,6 +722,7 @@ static void sd_poll() {
             break;
         case JOB_PUT:
             if (job.result) {
+                Serial.printf("SD: upload failed, %d\n", job.result);
                 sdx.put_client = 255;
                 if (here) sd_error(c, "put", job.result);
             } else if (sdx.put_client == c) {
