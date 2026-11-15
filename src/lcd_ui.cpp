@@ -738,6 +738,7 @@ void press_wifi(int x, int y) {
 const int FILES_MAX = 64;
 SdEntry *files;
 uint8_t *view_rows; /* two image rows */
+bool view_ready;    /* the image is on the screen: later redraws do the buttons only */
 int file_count, file_top, file_error;
 char view_name[64];
 uint32_t view_offset, view_stride;
@@ -800,12 +801,13 @@ bool open_view(const char *name) {
         return false;
     }
     free(view_rows);
-    view_rows = (uint8_t *)malloc(2 * 3 * w);
+    view_rows = (uint8_t *)malloc(2 * (((uint32_t)w * 3 + 3) & ~3u));
     if (!view_rows) {
         toast("メモリ不足", RED);
         return false;
     }
     strlcpy(view_name, name, sizeof(view_name));
+    view_ready = false;
     view_offset = u32(10), view_w = w, view_h = hh;
     view_stride = (w * 3 + 3) & ~3u;
     return true;
@@ -872,26 +874,37 @@ Rect view_button(int i) {
     int w = (scr_w - 8) / 3;
     return {i * (w + 4), scr_h - VIEW_BAR + 4, w, VIEW_BAR - 4};
 }
-bool view_row(int sy, uint8_t *out) {
+/* Image row sy, and with `two` the row below it as well, in one read (they
+ * are next to each other in the file); *a and *b point at them. */
+bool view_rows_at(int sy, bool two, const uint8_t **a, const uint8_t **b) {
     const int h = abs(view_h);
-    int file_row = view_h > 0 ? h - 1 - sy : sy;
-    size_t got;
+    bool up = view_h > 0; /* bottom row first in the file */
+    int first = up ? h - 1 - sy - (two ? 1 : 0) : sy;
+    size_t got, want = (two ? view_stride : 0) + view_w * 3;
     uint32_t total;
-    return !sd_read(view_name, view_offset + file_row * view_stride, out, view_w * 3, &got, &total) &&
-           got >= (size_t)view_w * 3;
+    if (sd_read(view_name, view_offset + first * view_stride, view_rows, want, &got, &total) || got < want)
+        return false;
+    *a = view_rows + (up && two ? view_stride : 0);
+    *b = view_rows + (up && two ? 0 : view_stride);
+    return true;
 }
 
 void draw_view() {
     if (!view_rows) return;
-    uint8_t *src = view_rows, *src2 = view_rows + 3 * view_w;
     const int h = abs(view_h), area = scr_h - VIEW_BAR;
     float k = min((float)scr_w / view_w, (float)area / h);
     int dw = max(1, (int)(view_w * k)), dh = max(1, (int)(h * k));
     int ox = (scr_w - dw) / 2, oy = (area - dh) / 2;
-    for (int y = max(strip_y, oy); y < min(strip_y + STRIP, oy + dh); y++) {
+    /* rows in the order they are in the file (bottom-up for most BMPs), so
+     * the card is only ever read forwards */
+    int y0 = max(strip_y, oy), y1 = min(strip_y + STRIP, oy + dh);
+    bool up = view_h > 0;
+    for (int i = 0; i < y1 - y0; i++) {
+        int y = up ? y1 - 1 - i : y0 + i;
         int sy = min((int)((y - oy) / k), h - 1);
         bool box = k <= 0.5f && sy + 1 < h;
-        if (!view_row(sy, src) || (box && !view_row(sy + 1, src2))) continue;
+        const uint8_t *src, *src2;
+        if (!view_rows_at(sy, box, &src, &src2)) continue;
         uint16_t *out = buf + (y - strip_y) * scr_w;
         for (int x = ox; x < ox + dw; x++) {
             int sx = min((int)((x - ox) / k), view_w - 1);
@@ -1271,7 +1284,15 @@ void render() {
                 columns(col_noise, noise + FRAME_HEADER, N, get32(noise + 4) / 1000.0, get32(noise + 8) / 1000.0);
         }
     }
-    for (strip_y = 0; strip_y < scr_h; strip_y += STRIP) {
+    /* The viewer: strips bottom-up for a bottom-up image (the card is read
+     * forwards), and once the image is shown only the strip of buttons is
+     * drawn again (the image ends above it, messages go there too). */
+    bool viewing = screen == VIEW, view_up = viewing && view_h > 0;
+    if (!viewing) view_ready = false;
+    const int strips = (scr_h + STRIP - 1) / STRIP;
+    for (int si = 0; si < strips; si++) {
+        strip_y = (view_up ? strips - 1 - si : si) * STRIP;
+        if (viewing && view_ready && strip_sent[strip_y / STRIP] && strip_y + STRIP <= scr_h - VIEW_BAR) continue;
         memset(buf, 0, scr_w * STRIP * sizeof(uint16_t));
         if (screen == MAIN) draw_main();
         else if (screen == SETTINGS) draw_settings();
@@ -1281,7 +1302,7 @@ void render() {
         else if (screen == VIEW) draw_view();
         else if (screen == RENAME) draw_rename();
         else draw_advanced();
-        if (screen != MAIN) draw_toast(scr_w / 2, scr_h / 2);
+        if (screen != MAIN) draw_toast(scr_w / 2, viewing ? scr_h - VIEW_BAR / 2 + 2 : scr_h / 2);
         /* a strip that looks as it did the last time is not sent again */
         int rows = min(STRIP, scr_h - strip_y), i = strip_y / STRIP;
         uint32_t h = 2166136261u;
@@ -1294,6 +1315,7 @@ void render() {
         }
         poll_touch();
     }
+    if (viewing) view_ready = true;
 }
 
 /* ---- screenshot of the main screen (graph and markers, without the buttons)
