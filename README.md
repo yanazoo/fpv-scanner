@@ -13,6 +13,10 @@ XIAO ESP32-C5 の 2 枚だけで動き、電池でも使えます。本体が Wi
 <img src="docs/images/lcd_settings.png" width="48%" alt="液晶の設定画面">
 <img src="docs/images/lcd_wifi.png" width="48%" alt="液晶の Wi-Fi 設定画面">
 </p>
+<p>
+<img src="docs/images/lcd_files.png" width="48%" alt="液晶の SD カードの画像の一覧">
+<img src="docs/images/lcd_view.png" width="48%" alt="液晶で保存画像を表示">
+</p>
 
 <img src="docs/images/web_phone.png" width="300" align="right" alt="スマホの Web 画面">
 
