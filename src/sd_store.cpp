@@ -40,6 +40,15 @@ bool mount() {
 
 void path_of(const char *name, char *path) { snprintf(path, 70, "/%s", name); }
 
+/* The library gives every open file a 4 KB buffer of its own, on top of the
+ * card's sector buffer: 512 bytes are enough for the pieces read and
+ * written here, and leave the memory to Wi-Fi. */
+File open_file(const char *path, const char *mode) {
+    File f = SD.open(path, mode);
+    if (f) f.setBufferSize(512);
+    return f;
+}
+
 /* ---- the operations themselves (LCD task only) ---- */
 int do_list(SdEntry *out, int max, int *count) {
     *count = 0;
@@ -72,7 +81,7 @@ int do_read(const char *name, uint32_t offset, uint8_t *buf, size_t size, size_t
         close_reader();
         char path[70];
         path_of(name, path);
-        reader = SD.open(path, FILE_READ);
+        reader = open_file(path, FILE_READ);
         if (!reader) return SD_FAIL;
         strlcpy(reader_name, name, sizeof(reader_name));
     }
@@ -91,9 +100,11 @@ int do_write(const char *name, uint32_t offset, const uint8_t *data, size_t size
     close_reader();
     char path[70];
     path_of(name, path);
-    File f = SD.open(path, offset ? FILE_APPEND : FILE_WRITE);
+    File f = open_file(path, offset ? FILE_APPEND : FILE_WRITE);
     if (!f) return SD_FAIL;
-    bool ok = f.size() == offset && f.write(data, size) == size;
+    /* a piece must follow the file as it is (the library's size of a file
+     * it has just made is not to be trusted: a new file starts empty) */
+    bool ok = (!offset || f.size() == offset) && f.write(data, size) == size;
     f.close();
     return ok ? SD_OK : SD_FAIL;
 }
@@ -241,7 +252,7 @@ int sd_create(const char *name) {
     close_reader();
     char path[70];
     path_of(name, path);
-    writer = SD.open(path, FILE_WRITE);
+    writer = open_file(path, FILE_WRITE);
     return writer ? SD_OK : SD_FAIL;
 }
 bool sd_append(const uint8_t *data, size_t size) {
