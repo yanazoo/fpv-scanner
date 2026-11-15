@@ -757,11 +757,25 @@ void open_files() {
     screen = FILES;
 }
 
-/* The list read again (after a rename or a delete), on the same page. */
-void refresh_files() {
-    int top = file_top;
-    open_files();
-    file_top = max(0, min(top, file_count - 1));
+/* The list after a rename or a delete, changed here (reading the card's
+ * folder again took a moment). */
+void list_rename(const char *from, const char *to, uint32_t size) {
+    int i = 0;
+    while (i < file_count && strcmp(files[i].name, from)) i++;
+    if (i == file_count) return;
+    strlcpy(files[i].name, to, sizeof(files[i].name));
+    files[i].size = size;
+    /* back into name order */
+    for (; i > 0 && strcasecmp(files[i - 1].name, files[i].name) > 0; i--) std::swap(files[i - 1], files[i]);
+    for (; i + 1 < file_count && strcasecmp(files[i].name, files[i + 1].name) > 0; i++) std::swap(files[i], files[i + 1]);
+}
+void list_remove(const char *name) {
+    int i = 0;
+    while (i < file_count && strcmp(files[i].name, name)) i++;
+    if (i == file_count) return;
+    memmove(files + i, files + i + 1, (file_count - i - 1) * sizeof(SdEntry));
+    file_count--;
+    file_top = max(0, min(file_top, file_count - 1));
 }
 
 void close_files() {
@@ -887,6 +901,12 @@ bool view_rows_at(int sy, bool two, const uint8_t **a, const uint8_t **b) {
     return true;
 }
 
+/* A tap on the buttons while the image is still being read stops the
+ * reading, so that the button answers at once (tap_waiting() is defined
+ * with the touch code). */
+bool tap_waiting();
+bool view_stopped;
+
 void draw_view() {
     if (!view_rows) return;
     const int h = abs(view_h), area = scr_h - VIEW_BAR;
@@ -898,6 +918,10 @@ void draw_view() {
     int y0 = max(strip_y, oy), y1 = min(strip_y + STRIP, oy + dh);
     bool up = view_h > 0;
     for (int i = 0; i < y1 - y0; i++) {
+        if (i % 4 == 0 && tap_waiting()) {
+            view_stopped = true;
+            return;
+        }
         int y = up ? y1 - 1 - i : y0 + i;
         int sy = min((int)((y - oy) / k), h - 1);
         bool box = k <= 0.5f && sy + 1 < h;
@@ -990,8 +1014,8 @@ void press_view(int x, int y) {
         if (!armed) {
             delete_armed = true;
         } else if (sd_remove(view_name) == SD_OK) {
+            list_remove(view_name);
             close_view();
-            refresh_files();
             toast("削除しました", GREEN);
         } else {
             toast("削除できません", RED);
@@ -1047,8 +1071,11 @@ void press_rename(int x, int y) {
         } else if (!strcmp(name, view_name)) {
             screen = VIEW;
         } else if (sd_rename(view_name, name) == SD_OK) {
+            uint32_t size = 0;
+            for (int i = 0; i < file_count; i++)
+                if (!strcmp(files[i].name, view_name)) size = files[i].size;
+            list_rename(view_name, name, size);
             strlcpy(view_name, name, sizeof(view_name));
-            refresh_files();
             screen = VIEW;
             toast("名前を変更しました", GREEN);
         } else {
@@ -1243,6 +1270,12 @@ void poll_touch() {
     }
 }
 
+/* the viewer: a touch has come on its buttons */
+bool tap_waiting() {
+    poll_touch();
+    return touch.pressed && screen == VIEW && touch.y >= scr_h - VIEW_BAR - 2;
+}
+
 /* What each strip looked like when it was last sent to the LCD. */
 uint32_t strip_hash[(LCD_H + STRIP - 1) / STRIP];
 bool strip_sent[(LCD_H + STRIP - 1) / STRIP];
@@ -1287,9 +1320,12 @@ void render() {
      * drawn again (the image ends above it, messages go there too). */
     bool viewing = screen == VIEW, view_up = viewing && view_h > 0;
     if (!viewing) view_ready = false;
+    view_stopped = false;
     const int strips = (scr_h + STRIP - 1) / STRIP;
-    for (int si = 0; si < strips; si++) {
-        strip_y = (view_up ? strips - 1 - si : si) * STRIP;
+    for (int si = 0; si < strips && !view_stopped; si++) {
+        /* the viewer: its strip of buttons first, then the image */
+        int n = !viewing ? si : si == 0 ? strips - 1 : view_up ? strips - 1 - si : si - 1;
+        strip_y = n * STRIP;
         if (viewing && view_ready && strip_sent[strip_y / STRIP] && strip_y + STRIP <= scr_h - VIEW_BAR) continue;
         memset(buf, 0, scr_w * STRIP * sizeof(uint16_t));
         if (screen == MAIN) draw_main();
@@ -1313,7 +1349,7 @@ void render() {
         }
         poll_touch();
     }
-    if (viewing) view_ready = true;
+    if (viewing) view_ready = !view_stopped;
 }
 
 /* ---- screenshot of the main screen (graph and markers, without the buttons)

@@ -43,9 +43,9 @@ void path_of(const char *name, char *path) { snprintf(path, 70, "/%s", name); }
 /* The library gives every open file a 4 KB buffer of its own, on top of the
  * card's sector buffer: 512 bytes are enough for the pieces read and
  * written here, and leave the memory to Wi-Fi. */
-File open_file(const char *path, const char *mode) {
+File open_file(const char *path, const char *mode, size_t buffer = 512) {
     File f = SD.open(path, mode);
-    if (f) f.setBufferSize(512);
+    if (f) f.setBufferSize(buffer);
     return f;
 }
 
@@ -81,7 +81,9 @@ int do_read(const char *name, uint32_t offset, uint8_t *buf, size_t size, size_t
         close_reader();
         char path[70];
         path_of(name, path);
-        reader = open_file(path, FILE_READ);
+        /* whole sectors at a time when memory allows (the LCD's viewer reads
+         * a lot): much quicker than 512 bytes at a time */
+        reader = open_file(path, FILE_READ, ESP.getFreeHeap() > 30000 ? 4096 : 512);
         if (!reader) return SD_FAIL;
         strlcpy(reader_name, name, sizeof(reader_name));
     }
