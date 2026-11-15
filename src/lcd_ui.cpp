@@ -883,6 +883,8 @@ void press_files(int x, int y) {
  * (the LCD's screenshots are twice its size). */
 const int VIEW_BAR = 40;
 bool delete_armed; /* 削除 pressed once: 本当に削除 */
+/* left to right: 削除 名前変更 戻る */
+enum { VIEW_DELETE, VIEW_RENAME, VIEW_BACK };
 Rect view_button(int i) {
     int w = (scr_w - 8) / 3;
     return {i * (w + 4), scr_h - VIEW_BAR + 4, w, VIEW_BAR - 4};
@@ -941,9 +943,9 @@ void draw_view() {
                          (p[0] + p[3] + q[0] + q[3]) / 4);
         }
     }
-    button(view_button(0), "戻る");
-    button(view_button(1), "名前変更");
-    Rect d = view_button(2);
+    button(view_button(VIEW_BACK), "戻る");
+    button(view_button(VIEW_RENAME), "名前変更");
+    Rect d = view_button(VIEW_DELETE);
     if (!delete_armed) {
         button(d, "削除");
     } else { /* the second press deletes */
@@ -1002,16 +1004,16 @@ int kb_max() { return 60 - (int)strlen(view_ext()); }
 void press_view(int x, int y) {
     bool armed = delete_armed;
     delete_armed = false; /* anything else than 本当に削除 cancels it */
-    if (view_button(0).in(x, y)) {
+    if (view_button(VIEW_BACK).in(x, y)) {
         close_view();
-    } else if (view_button(1).in(x, y)) {
+    } else if (view_button(VIEW_RENAME).in(x, y)) {
         size_t base = strlen(view_name) - strlen(view_ext());
         kb_len = min((int)base, kb_max());
         memcpy(kb_name, view_name, kb_len);
         kb_name[kb_len] = '\0';
         kb_shift = false;
         screen = RENAME;
-    } else if (view_button(2).in(x, y)) {
+    } else if (view_button(VIEW_DELETE).in(x, y)) {
         if (!armed) {
             delete_armed = true;
         } else if (sd_remove(view_name) == SD_OK) {
