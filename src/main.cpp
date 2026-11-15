@@ -910,7 +910,7 @@ WifiInfo shared_wifi() {
     w.wait = wifi.wait;
     strlcpy(w.ip, wifi.ip, sizeof(w.ip));
     strlcpy(w.ssid, wifi.ssid, sizeof(w.ssid));
-    strlcpy(w.pass, wifi.pass, sizeof(w.pass));
+    w.has_pass = wifi.pass[0] != '\0'; /* (never shown on the LCD) */
     strlcpy(w.ap_ssid, wifi.ap_ssid, sizeof(w.ap_ssid));
     strlcpy(w.ap_pass, wifi.ap_pass, sizeof(w.ap_pass));
     xSemaphoreGive(lock);

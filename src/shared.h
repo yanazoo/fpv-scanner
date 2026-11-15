@@ -55,15 +55,16 @@ void shared_apply(const char *text);
 /* Saves (NSE2 frame) or clears the noise reference; done by the web task. */
 void shared_store_noise(const uint8_t *frame);
 void shared_clear_noise();
-/* Wi-Fi settings and state, for the LCD's Wi-Fi screen (passwords included:
- * the screen shows them). */
+/* Wi-Fi settings and state, for the LCD's Wi-Fi screen. The host's password
+ * is shown there; the joined network's is not, only whether there is one. */
 struct WifiInfo {
     bool on;       /* Wi-Fi switched on */
     int state;     /* 0: host, 1: connecting, 2: client, 3: off */
     bool fallback; /* host because the client connection failed */
     unsigned reason; /* why the client connection failed (Wi-Fi reason code), 0 = none */
     int mode, wait; /* 0: host, 1: client first; seconds before falling back */
-    char ip[16], ssid[33], pass[65], ap_ssid[33], ap_pass[65];
+    bool has_pass; /* the joined network has a password */
+    char ip[16], ssid[33], ap_ssid[33], ap_pass[65];
 };
 WifiInfo shared_wifi();
 /* Switches Wi-Fi on or off (saved); used by the touch LCD. */

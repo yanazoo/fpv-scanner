@@ -719,7 +719,8 @@ void draw_wifi() {
     text(4, y, "SSID", GRAY);
     y = text_wrap(VX, y, VW, wi.ssid[0] ? wi.ssid : "未設定", WHITE, LH);
     text(4, y, "パスワード", GRAY);
-    text_wrap(VX, y, VW, wi.pass[0] ? wi.pass : "なし", WHITE, LH);
+    /* the joined network's password stays hidden (it is often a home one) */
+    text_wrap(VX, y, VW, wi.has_pass ? "********" : "なし", WHITE, LH);
 }
 
 void press_wifi(int x, int y) {
@@ -882,6 +883,8 @@ void press_files(int x, int y) {
  * (the LCD's screenshots are twice its size). */
 const int VIEW_BAR = 40;
 bool delete_armed; /* 削除 pressed once: 本当に削除 */
+/* left to right: 削除 名前変更 戻る */
+enum { VIEW_DELETE, VIEW_RENAME, VIEW_BACK };
 Rect view_button(int i) {
     int w = (scr_w - 8) / 3;
     return {i * (w + 4), scr_h - VIEW_BAR + 4, w, VIEW_BAR - 4};
@@ -940,9 +943,9 @@ void draw_view() {
                          (p[0] + p[3] + q[0] + q[3]) / 4);
         }
     }
-    button(view_button(0), "戻る");
-    button(view_button(1), "名前変更");
-    Rect d = view_button(2);
+    button(view_button(VIEW_BACK), "戻る");
+    button(view_button(VIEW_RENAME), "名前変更");
+    Rect d = view_button(VIEW_DELETE);
     if (!delete_armed) {
         button(d, "削除");
     } else { /* the second press deletes */
@@ -1001,16 +1004,16 @@ int kb_max() { return 60 - (int)strlen(view_ext()); }
 void press_view(int x, int y) {
     bool armed = delete_armed;
     delete_armed = false; /* anything else than 本当に削除 cancels it */
-    if (view_button(0).in(x, y)) {
+    if (view_button(VIEW_BACK).in(x, y)) {
         close_view();
-    } else if (view_button(1).in(x, y)) {
+    } else if (view_button(VIEW_RENAME).in(x, y)) {
         size_t base = strlen(view_name) - strlen(view_ext());
         kb_len = min((int)base, kb_max());
         memcpy(kb_name, view_name, kb_len);
         kb_name[kb_len] = '\0';
         kb_shift = false;
         screen = RENAME;
-    } else if (view_button(2).in(x, y)) {
+    } else if (view_button(VIEW_DELETE).in(x, y)) {
         if (!armed) {
             delete_armed = true;
         } else if (sd_remove(view_name) == SD_OK) {
@@ -1316,9 +1319,11 @@ void render() {
         }
     }
     /* The viewer: strips bottom-up for a bottom-up image (the card is read
-     * forwards), and once the image is shown only the strip of buttons is
-     * drawn again (the image ends above it, messages go there too). */
+     * forwards), and once the image is shown only the strip of buttons (and
+     * where a message is) is drawn again. */
     bool viewing = screen == VIEW, view_up = viewing && view_h > 0;
+    static bool view_toast;                         /* a message was on the image */
+    const int view_msg_y = (scr_h - VIEW_BAR) / 2; /* the viewer's messages: mid-image */
     if (!viewing) view_ready = false;
     view_stopped = false;
     const int strips = (scr_h + STRIP - 1) / STRIP;
@@ -1326,7 +1331,11 @@ void render() {
         /* the viewer: its strip of buttons first, then the image */
         int n = !viewing ? si : si == 0 ? strips - 1 : view_up ? strips - 1 - si : si - 1;
         strip_y = n * STRIP;
-        if (viewing && view_ready && strip_sent[strip_y / STRIP] && strip_y + STRIP <= scr_h - VIEW_BAR) continue;
+        /* (a message in the middle of the image, or one that has just gone,
+         * takes the strips it is on) */
+        bool on_message = (toast_text[0] || view_toast) && strip_y < view_msg_y + 14 && strip_y + STRIP > view_msg_y - 14;
+        if (viewing && view_ready && strip_sent[strip_y / STRIP] && strip_y + STRIP <= scr_h - VIEW_BAR && !on_message)
+            continue;
         memset(buf, 0, scr_w * STRIP * sizeof(uint16_t));
         if (screen == MAIN) draw_main();
         else if (screen == SETTINGS) draw_settings();
@@ -1336,7 +1345,7 @@ void render() {
         else if (screen == VIEW) draw_view();
         else if (screen == RENAME) draw_rename();
         else draw_advanced();
-        if (screen != MAIN) draw_toast(scr_w / 2, viewing ? scr_h - VIEW_BAR / 2 + 2 : scr_h / 2);
+        if (screen != MAIN) draw_toast(scr_w / 2, viewing ? view_msg_y : scr_h / 2);
         /* a strip that looks as it did the last time is not sent again */
         int rows = min(STRIP, scr_h - strip_y), i = strip_y / STRIP;
         uint32_t h = 2166136261u;
@@ -1350,6 +1359,7 @@ void render() {
         poll_touch();
     }
     if (viewing) view_ready = !view_stopped;
+    view_toast = viewing && toast_text[0];
 }
 
 /* ---- screenshot of the main screen (graph and markers, without the buttons)
