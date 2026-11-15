@@ -303,7 +303,7 @@ static void publish(const SweepConfig &c, unsigned elapsed_ms, unsigned steps, c
 }
 
 static void sweep_task(void *) {
-    static uint8_t bins[2048];
+    static uint8_t bins[1024]; /* fft_n of every step plan (SdrLink::spectrum refuses more) */
     static uint8_t trace[SWEEP_POINTS];
     static bool filled[SWEEP_POINTS];
     SweepConfig c;

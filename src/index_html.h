@@ -218,7 +218,7 @@ let up=null,dl=null,sdFiles=[],sdAsked=false,sdEdit=null,sdDel=null;
 function sdPut(blob,name){blob.arrayBuffer().then(b=>{up={name,bytes:new Uint8Array(b)};
  if(send('sd put '+name))shotMsg('SDカードに保存中…');else{up=null;shotMsg('本体に接続されていないためSDカードに保存できませんでした','#f85149')}})}
 function upNext(off){if(!up)return;const n=up.bytes.length;if(off>=n){send('sd end');return}
- const k=Math.min(4096,n-off),b=new Uint8Array(8+k);b.set([83,68,87,49]);new DataView(b.buffer).setUint32(4,off,true);b.set(up.bytes.subarray(off,off+k),8);
+ const k=Math.min(2048,n-off),b=new Uint8Array(8+k);b.set([83,68,87,49]);new DataView(b.buffer).setUint32(4,off,true);b.set(up.bytes.subarray(off,off+k),8);
  send(b.buffer);shotMsg(`SDカードに保存中… ${Math.round(off/n*100)}%`)}
 // Downloads go piece by piece: each one asked for when the last has come; one that does not
 // come within 4 s is asked for again (5 times at most).

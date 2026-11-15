@@ -2,7 +2,9 @@
 #include "esp_rom_crc.h"
 
 void SdrLink::begin(int rx_pin, int tx_pin, uint32_t baud) {
-    port_.setRxBufferSize(16384);
+    /* 40 ms at 2 Mbit/s: the sweep task reads the frames as they come
+     * (16 KB before, but with Wi-Fi on memory is short) */
+    port_.setRxBufferSize(8192);
     port_.begin(baud, SERIAL_8N1, rx_pin, tx_pin);
 }
 
@@ -73,6 +75,8 @@ bool SdrLink::command(const char *cmd, char *reply, size_t reply_size, uint32_t 
 bool SdrLink::spectrum(unsigned mhz, unsigned rate_code, unsigned n, unsigned dwell_ms, bool max_hold,
                        uint8_t *bins) {
     char cmd[64], line[96];
+    const unsigned MAX_BINS = 1024; /* every step plan uses 1024 */
+    if (n > MAX_BINS) return false;
     snprintf(cmd, sizeof(cmd), "FREQ %u", mhz);
     uint32_t t0 = millis();
     if (!command(cmd, nullptr, 0, 3000)) return false;
@@ -83,10 +87,10 @@ bool SdrLink::spectrum(unsigned mhz, unsigned rate_code, unsigned n, unsigned dw
     if (!read_line(line, sizeof(line), 2000) || strncmp(line, "SPEC ", 5)) return false;
 
     /* Frames: "SPC1" + 24 header bytes + n codes + CRC32, until "SPECEND ...\n". */
-    static uint8_t frame[28 + 2048 + 4];
-    static uint32_t sum[2048];
+    static uint8_t frame[28 + MAX_BINS + 4];
+    static uint32_t sum[MAX_BINS];
     unsigned frames = 0;
-    memset(sum, 0, sizeof(sum));
+    memset(sum, 0, n * sizeof(sum[0]));
     for (;;) {
         if (!read_exact(frame, 4, dwell_ms + 3000)) return false;
         if (!memcmp(frame, "SPC1", 4)) {

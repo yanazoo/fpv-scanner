@@ -180,8 +180,9 @@ bool lcd_sd_begin() {
     for (uint32_t hz : {SD_HZ, (uint32_t)4000000}) {
         SD.end();
         digitalWrite(PIN_SD_CS, HIGH);
-        /* 2 open files at most (a reader and a writer): each one costs memory */
-        if (SD.begin(PIN_SD_CS, spi, hz, "/sd", 2) && SD.cardType() != CARD_NONE) {
+        /* one open file at most (sd_store closes the reader before anything
+         * else): each one costs about 4 KB */
+        if (SD.begin(PIN_SD_CS, spi, hz, "/sd", 1) && SD.cardType() != CARD_NONE) {
             Serial.printf("SD: mounted at %lu MHz, %s, heap %lu\n", (unsigned long)(hz / 1000000),
                           SD.cardType() == CARD_SDHC ? "SDHC" : "SD", (unsigned long)ESP.getFreeHeap());
             return true;
