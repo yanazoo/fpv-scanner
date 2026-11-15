@@ -68,7 +68,7 @@ td.ch{cursor:pointer}#mt td:first-child,#mt th:first-child{width:1%;white-space:
 </div></div>
 
 <div class="box" id="sdbox" hidden><div class="row">
- 画像保存先 <select id="shotsd"><option value="1">SDカード</option><option value="0">ダウンロード</option></select>
+ SDカードの画像
  <button id="sdload">一覧を更新</button><span id="sdmsg" style="font-size:13px"></span>
 </div><div style="overflow-x:auto"><table id="sdtab"></table></div></div>
 
@@ -206,7 +206,7 @@ $('shot').onclick=()=>{draw();const r=devicePixelRatio||1,pad=8*r,lh=20*r,W=cv.w
  markers.forEach((f,m)=>{const lv=f===null?null:level(f),y=y0+(m+1)*lh+lh/2;g.fillStyle=MCOL[m];
   ['M'+(m+1),lv===null?'-':lv.toFixed(1),f===null?'-':nearestCh(f),f===null?'-':f.toFixed(1)].forEach((t,i)=>g.fillText(t,col[i],y))});
  const name=`fpv_${stamp}_${f0}-${f1}.png`,url=c.toDataURL('image/png');showImage(url,name,'');
- if(cfg.sd&&cfg.shotsd)c.toBlob(b=>b&&sdPut(b,name),'image/png')};
+ if(cfg.sd)c.toBlob(b=>b&&sdPut(b,name),'image/png')};
 function showImage(url,name,msg){if(shotUrl)URL.revokeObjectURL(shotUrl);shotUrl=url.startsWith('blob:')?url:'';
  $('shotimg').src=url;$('shotdl').href=url;$('shotdl').download=name;shotMsg(msg);$('shotbox').hidden=false}
 let shotUrl='';const shotMsg=(t,c)=>{$('shotmsg').textContent=t;$('shotmsg').style.color=c||'#8b949e'};
@@ -257,7 +257,7 @@ $('sdtab').onclick=e=>{const b=e.target.closest('button');if(!b)return;const op=
  else if(op==='del'){sdDel=+b.dataset.i;sdEdit=null;renderSd()}
  else if(op==='delok')send('sd del '+f.n)};
 $('sdload').onclick=sdList;
-$('shotsd').onchange=()=>{cfg.shotsd=+$('shotsd').value;send('cfg shotsd='+cfg.shotsd)};
+
 for(const b of BK){const l=document.createElement('label');l.innerHTML=`<input type="checkbox" data-b="${b}"><span style="color:${BCOL[b]}">${b}</span> `;
  l.firstChild.onchange=()=>$('applyb').classList.add('dirty');$('bandsel').appendChild(l)}
 $('applyb').onclick=()=>{let m=0;document.querySelectorAll('#bandsel input').forEach(i=>{if(i.checked)m|=1<<BK.indexOf(i.dataset.b)});apply(`cfg bands=${m}`,$('applyb'))};
@@ -286,7 +286,7 @@ function onStatus(s){
  cfg=s;if(first)fillForm(s);
  $('st').textContent=s.linked?'C5接続':'C5未接続';$('st').className=s.linked?'ok':'ng';
  $('info').textContent=`${s.start}-${s.stop}MHz ${s.steps}step ${s.sweep_ms}ms（切替${s.tune_ms} 測定${s.measure_ms}）`;$('nst').textContent=s.noise?'保存済み':'';
- $('sdbox').hidden=!s.sd;if(s.sd){$('shotsd').value=s.shotsd??1;if(!sdAsked){sdAsked=true;sdList()}}
+ $('sdbox').hidden=!s.sd;if(s.sd){if(!sdAsked){sdAsked=true;sdList()}}
  $('lcdbox').hidden=!s.lcd;if(s.lcd&&!$('applyl').classList.contains('dirty')){$('lbright').value=s.lbright;$('lsleep').value=s.lsleep;$('lflip').checked=!!s.lflip}
  // Battery of the LCD build (-1: none, as on the S3).
  const b=s.bat??-1;$('bat').textContent=b<0?'':`電池${b}%`;$('bat').className=b<0?'':b<(s.bat_low??10)?'lo':b<50?'mid':'hi';

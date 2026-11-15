@@ -146,7 +146,6 @@ static void load_settings() {
     c.lcd_panel = prefs.getInt("lpanel", c.lcd_panel);
     c.lcd_land = prefs.getBool("lland", c.lcd_land);
     c.lcd_flip = prefs.getBool("lflip", c.lcd_flip);
-    c.shot_sd = prefs.getBool("shotsd", c.shot_sd);
     wifi.on = !WIFI_SWITCHABLE || prefs.getBool("won", true);
     wifi.mode = prefs.getInt("wmode", wifi.mode);
     wifi.wait = prefs.getInt("wwait", wifi.wait);
@@ -186,7 +185,6 @@ static void save_settings() {
     prefs.putInt("lpanel", c.lcd_panel);
     prefs.putBool("lland", c.lcd_land);
     prefs.putBool("lflip", c.lcd_flip);
-    prefs.putBool("shotsd", c.shot_sd);
 }
 
 /* JSON string contents: quotes, backslashes and control characters escaped. */
@@ -232,7 +230,7 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
              "\"tune_ms\":%u,\"measure_ms\":%u,\"bat\":%d,\"bat_low\":%d,"
              "\"lcd\":%d,\"lbright\":%d,\"lsleep\":%d,\"lflip\":%d,\"warn\":%d,"
              "\"wmode\":%d,\"wwait\":%d,\"wssid\":\"%s\",\"wpass\":%d,\"wstate\":%d,\"wfb\":%d,"
-             "\"wip\":\"%s\",\"ap\":\"%s\",\"mdns\":\"%s\",\"wreason\":%u,\"sd\":%d,\"shotsd\":%d}",
+             "\"wip\":\"%s\",\"ap\":\"%s\",\"mdns\":\"%s\",\"wreason\":%u,\"sd\":%d}",
              linked ? "true" : "false", info, c.start_mhz, c.stop_mhz, c.rate_code, c.dwell_ms,
              c.max_hold ? 1 : 0, c.gain, gain_max, steps, (unsigned)(2 * half_use_khz(c.rate_code)), sweep_ms,
              receiver_error, config.cal_tenths, config.bands, has_noise ? "true" : "false", config.markers[0],
@@ -240,7 +238,7 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
              config.yrange, (unsigned)sweep_tune_ms, (unsigned)sweep_measure_ms, battery_percent, BATTERY_LOW_PERCENT,
              FPV_LCD ? 1 : 0, config.lcd_bright, config.lcd_sleep, config.lcd_flip ? 1 : 0, config.warn_dbfs,
              wifi.mode, wifi.wait, ssid, wifi.pass[0] ? 1 : 0, (int)wifi.state, wifi.fallback ? 1 : 0, wifi.ip,
-             ap_ssid, MDNS_NAME, wifi.reason, sd_available() ? 1 : 0, config.shot_sd ? 1 : 0);
+             ap_ssid, MDNS_NAME, wifi.reason, sd_available() ? 1 : 0);
     status_dirty = true;
     xSemaphoreGive(lock);
 }
@@ -452,7 +450,6 @@ static void handle_text(const char *text) {
         else if (!strcmp(key, "lpanel")) c.lcd_panel = constrain(value, 0, 30);
         else if (!strcmp(key, "lland")) c.lcd_land = value != 0;
         else if (!strcmp(key, "lflip")) c.lcd_flip = value != 0;
-        else if (!strcmp(key, "shotsd")) c.shot_sd = value != 0;
     }
     if (c.stop_mhz < c.start_mhz + 5) c.stop_mhz = c.start_mhz + 5;
     xSemaphoreTake(lock, portMAX_DELAY);

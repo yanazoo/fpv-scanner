@@ -25,7 +25,6 @@ struct SweepConfig {
     int lcd_panel = 5;
     bool lcd_land = true;  /* screens in landscape */
     bool lcd_flip = false; /* landscape turned by 180 degrees */
-    bool shot_sd = true;   /* web page 画像保存: to the microSD card (else a download) */
 };
 
 /* Sweep frames and noise references: 24-byte header + SWEEP_POINTS codes.
