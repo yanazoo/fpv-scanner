@@ -14,9 +14,11 @@
 #include <Preferences.h>
 #include <WebSocketsServer.h>
 #include <WiFi.h>
+#include <esp_task_wdt.h>
 #include "config.h"
 #include "index_html.h"
 #include "portal_http.h"
+#include "sd_store.h"
 #include "sdr_link.h"
 #include "shared.h"
 #if FPV_LCD
@@ -228,7 +230,7 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
              "\"tune_ms\":%u,\"measure_ms\":%u,\"bat\":%d,\"bat_low\":%d,"
              "\"lcd\":%d,\"lbright\":%d,\"lsleep\":%d,\"lflip\":%d,\"warn\":%d,"
              "\"wmode\":%d,\"wwait\":%d,\"wssid\":\"%s\",\"wpass\":%d,\"wstate\":%d,\"wfb\":%d,"
-             "\"wip\":\"%s\",\"ap\":\"%s\",\"mdns\":\"%s\",\"wreason\":%u}",
+             "\"wip\":\"%s\",\"ap\":\"%s\",\"mdns\":\"%s\",\"wreason\":%u,\"sd\":%d}",
              linked ? "true" : "false", info, c.start_mhz, c.stop_mhz, c.rate_code, c.dwell_ms,
              c.max_hold ? 1 : 0, c.gain, gain_max, steps, (unsigned)(2 * half_use_khz(c.rate_code)), sweep_ms,
              receiver_error, config.cal_tenths, config.bands, has_noise ? "true" : "false", config.markers[0],
@@ -236,7 +238,7 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
              config.yrange, (unsigned)sweep_tune_ms, (unsigned)sweep_measure_ms, battery_percent, BATTERY_LOW_PERCENT,
              FPV_LCD ? 1 : 0, config.lcd_bright, config.lcd_sleep, config.lcd_flip ? 1 : 0, config.warn_dbfs,
              wifi.mode, wifi.wait, ssid, wifi.pass[0] ? 1 : 0, (int)wifi.state, wifi.fallback ? 1 : 0, wifi.ip,
-             ap_ssid, MDNS_NAME, wifi.reason);
+             ap_ssid, MDNS_NAME, wifi.reason, sd_available() ? 1 : 0);
     status_dirty = true;
     xSemaphoreGive(lock);
 }
@@ -299,12 +301,14 @@ static void publish(const SweepConfig &c, unsigned elapsed_ms, unsigned steps, c
 }
 
 static void sweep_task(void *) {
-    static uint8_t bins[2048];
+    static uint8_t bins[1024]; /* fft_n of every step plan (SdrLink::spectrum refuses more) */
     static uint8_t trace[SWEEP_POINTS];
     static bool filled[SWEEP_POINTS];
     SweepConfig c;
     unsigned shown_start = 0, shown_stop = 0, shown_rate = ~0u;
+    esp_task_wdt_add(nullptr);
     for (;;) {
+        esp_task_wdt_reset();
         if (!sdr.connected()) {
             xSemaphoreTake(lock, portMAX_DELAY);
             c = config;
@@ -347,6 +351,7 @@ static void sweep_task(void *) {
         uint32_t t0 = millis(), tune_total = 0, measure_total = 0;
         bool ok = true, restarted = false;
         for (unsigned s = 0; s < steps && ok; s++) {
+            esp_task_wdt_reset();
             /* A new setting restarts the sweep instead of waiting for it to end. */
             if (changed_since_start()) {
                 restarted = true;
@@ -550,6 +555,229 @@ static void send_passwords(uint8_t client) {
 static uint8_t noise_request[FRAME_SIZE];
 static bool noise_store_requested, noise_clear_requested;
 
+/* ---- the images on the microSD card, for the page ----
+ * "sd list"            -> {"type":"sdlist","err":0,"files":[{"n":name,"s":size},...]}
+ * "sd put NAME", then binary "SDW1" + u32 offset + data (up to 4 KB), each
+ *                         answered {"type":"sdack","off":next offset}
+ * "sd end"             -> {"type":"sdsaved","name":NAME}
+ * "sd get NAME OFFSET" -> binary "SDF1" + u32 offset + u32 size + data (up
+ *                         to 2 KB): one piece per request, so that only one
+ *                         is ever waiting to be sent (the page asks for the
+ *                         next when it has one, and again when one is lost)
+ * "sd ren OLD NEW", "sd del NAME" -> a new list
+ * Errors: {"type":"sderr","op":...,"err":SdResult}. The names are checked
+ * by sd_store (letters, digits . _ - only, so they need no escaping).
+ *
+ * The card is only reached through the LCD task, which can take a while
+ * (mounting a card, a screenshot being written), so the web task never
+ * waits for it: it hands one job at a time to the LCD task (sd_run_later)
+ * and answers the page when the job is done, meanwhile sending frames and
+ * status as usual. With Wi-Fi on little memory is left, so there is one
+ * buffer for every job and the file list is held only while it is made. */
+#if SD_SLOT
+static const size_t SD_PIECE = 2048; /* a download piece: below what writable() promises */
+static const size_t WS_HEAD = WEBSOCKETS_MAX_HEADER_SIZE; /* room for the frame header: no copy is made */
+static const size_t SD_PUT_MAX = 4096;
+enum SdJobOp { JOB_LIST, JOB_PUT, JOB_GET, JOB_REN, JOB_DEL };
+enum SdJobState { JOB_IDLE, JOB_QUEUED, JOB_DONE };
+static struct {
+    volatile SdJobState state = JOB_IDLE; /* IDLE/DONE: the web task's, QUEUED: the sd task's */
+    SdJobOp op;
+    uint8_t client;
+    char a[64], b[64];
+    uint32_t offset, total;
+    size_t size, got;
+    int result, count;
+    uint8_t data[WS_HEAD + 12 + SD_PUT_MAX]; /* put: the data; get: room, "SDF1" header, the piece; list: the JSON */
+} job;
+static struct {
+    uint8_t put_client = 255, get_client = 255;
+    char put_name[64], get_name[64];
+    uint32_t put_offset, get_offset;
+} sdx;
+
+/* list: the reply, made here so that the list of files is freed at once */
+static void list_job() {
+    const int MAX = 64;
+    SdEntry *files = (SdEntry *)malloc(MAX * sizeof(SdEntry));
+    int count = 0;
+    job.result = files ? sd_list(files, MAX, &count) : SD_FAIL;
+    char *out = (char *)job.data;
+    const size_t size = sizeof(job.data);
+    size_t n = snprintf(out, size, "{\"type\":\"sdlist\",\"err\":%d,\"files\":[", job.result);
+    for (int i = 0; !job.result && i < count && n + 100 < size; i++)
+        n += snprintf(out + n, size - n, "%s{\"n\":\"%s\",\"s\":%lu}", i ? "," : "", files[i].name,
+                      (unsigned long)files[i].size);
+    snprintf(out + n, size - n, "]}");
+    free(files);
+}
+
+/* LCD task (sd_run_later): carries out the job. */
+static void run_job() {
+    switch (job.op) {
+    case JOB_LIST: list_job(); break;
+    case JOB_PUT: job.result = sd_write(job.a, job.offset, job.data, job.size); break;
+    case JOB_GET:
+        job.total = 0;
+        job.result = sd_read(job.a, job.offset, job.data + WS_HEAD + 12, SD_PIECE, &job.got, &job.total);
+        break;
+    case JOB_REN: job.result = sd_rename(job.a, job.b); break;
+    case JOB_DEL: job.result = sd_remove(job.a); break;
+    }
+    __sync_synchronize();
+    job.state = JOB_DONE;
+}
+
+static void queue_job(SdJobOp op, uint8_t client) {
+    job.op = op;
+    job.client = client;
+    __sync_synchronize();
+    job.state = JOB_QUEUED;
+    if (!sd_run_later(run_job)) { /* the LCD task is not running */
+        job.result = SD_BUSY;
+        job.state = JOB_DONE;
+    }
+}
+
+static void sd_error(uint8_t client, const char *op, int err) {
+    char out[64];
+    snprintf(out, sizeof(out), "{\"type\":\"sderr\",\"op\":\"%s\",\"err\":%d}", op, err);
+    ws.sendTXT(client, out);
+}
+
+/* A new job is taken only when the last one is done (the page asks one
+ * thing at a time; a second page may have to try again). */
+static bool sd_free(uint8_t client, const char *op) {
+    if (job.state == JOB_IDLE) return true;
+    sd_error(client, op, SD_BUSY);
+    return false;
+}
+
+static void handle_sd(uint8_t client, const char *text) {
+    char a[64] = "", b[64] = "", out[128];
+    if (!strcmp(text, "sd list")) {
+        if (sd_free(client, "list")) queue_job(JOB_LIST, client);
+    } else if (sscanf(text, "sd put %63s", a) == 1) {
+        if (!sd_valid_name(a)) return sd_error(client, "put", SD_BAD_NAME);
+        sdx.put_client = client;
+        sdx.put_offset = 0;
+        strlcpy(sdx.put_name, a, sizeof(sdx.put_name));
+        ws.sendTXT(client, "{\"type\":\"sdack\",\"off\":0}");
+    } else if (!strcmp(text, "sd end")) {
+        if (sdx.put_client != client || !sdx.put_offset) return sd_error(client, "put", SD_FAIL);
+        sdx.put_client = 255;
+        snprintf(out, sizeof(out), "{\"type\":\"sdsaved\",\"name\":\"%s\"}", sdx.put_name);
+        ws.sendTXT(client, out);
+    } else if (sscanf(text, "sd get %63s", a) == 1) {
+        unsigned long offset = 0;
+        sscanf(text, "sd get %*s %lu", &offset);
+        if (!sd_valid_name(a)) return sd_error(client, "get", SD_BAD_NAME);
+        sdx.get_client = client; /* one download at a time: a new one replaces it */
+        sdx.get_offset = offset;
+        strlcpy(sdx.get_name, a, sizeof(sdx.get_name));
+    } else if (sscanf(text, "sd ren %63s %63s", a, b) == 2) {
+        if (!sd_free(client, "ren")) return;
+        strlcpy(job.a, a, sizeof(job.a));
+        strlcpy(job.b, b, sizeof(job.b));
+        queue_job(JOB_REN, client);
+    } else if (sscanf(text, "sd del %63s", a) == 1) {
+        if (!sd_free(client, "del")) return;
+        strlcpy(job.a, a, sizeof(job.a));
+        queue_job(JOB_DEL, client);
+    }
+}
+
+/* A piece of an upload: it must follow the last one. */
+static void sd_put_piece(uint8_t client, const uint8_t *data, size_t length) {
+    uint32_t offset;
+    memcpy(&offset, data + 4, 4);
+    if (sdx.put_client != client || offset != sdx.put_offset || length <= 8 || length - 8 > SD_PUT_MAX) {
+        Serial.printf("SD: upload piece at %lu refused (expected %lu)\n", (unsigned long)offset,
+                      (unsigned long)sdx.put_offset);
+        sdx.put_client = 255;
+        return sd_error(client, "put", SD_FAIL);
+    }
+    if (!sd_free(client, "put")) { /* (the page starts the upload again) */
+        Serial.println("SD: upload piece while busy");
+        sdx.put_client = 255;
+        return;
+    }
+    strlcpy(job.a, sdx.put_name, sizeof(job.a));
+    job.offset = offset;
+    job.size = length - 8;
+    memcpy(job.data, data + 8, job.size);
+    queue_job(JOB_PUT, client);
+}
+
+/* Web task: answers a finished job, and keeps a download going. */
+static void sd_poll() {
+    if (job.state == JOB_DONE) {
+        __sync_synchronize();
+        uint8_t c = job.client;
+        bool here = ws.clientIsConnected(c);
+        job.state = JOB_IDLE;
+        switch (job.op) {
+        case JOB_LIST:
+            if (here) ws.sendTXT(c, (const char *)job.data);
+            break;
+        case JOB_PUT:
+            if (job.result) {
+                Serial.printf("SD: upload failed, %d\n", job.result);
+                sdx.put_client = 255;
+                if (here) sd_error(c, "put", job.result);
+            } else if (sdx.put_client == c) {
+                sdx.put_offset = job.offset + job.size;
+                char out[48];
+                snprintf(out, sizeof(out), "{\"type\":\"sdack\",\"off\":%lu}", (unsigned long)sdx.put_offset);
+                if (here) ws.sendTXT(c, out);
+            }
+            break;
+        case JOB_GET:
+            if (sdx.get_client != c || !here || strcmp(job.a, sdx.get_name)) break; /* replaced or gone */
+            if (job.result || (!job.got && job.offset < job.total)) {
+                sdx.get_client = 255;
+                sd_error(c, "get", job.result ? job.result : SD_FAIL);
+                break;
+            }
+            memcpy(job.data + WS_HEAD, "SDF1", 4);
+            put32(job.data + WS_HEAD + 4, job.offset);
+            put32(job.data + WS_HEAD + 8, job.total);
+            /* (a piece that could not be sent is asked for again by the page) */
+            ws.sendBIN(c, job.data, 12 + job.got, true);
+            sdx.get_client = 255; /* the page asks for the next one */
+            break;
+        case JOB_REN:
+        case JOB_DEL:
+            if (job.result) {
+                if (here) sd_error(c, job.op == JOB_REN ? "ren" : "del", job.result);
+            } else if (here) {
+                queue_job(JOB_LIST, c); /* the page shows the new list */
+            }
+            return;
+        }
+    }
+    uint8_t c = sdx.get_client;
+    if (c == 255 || job.state != JOB_IDLE) return;
+    if (!ws.clientIsConnected(c)) {
+        sdx.get_client = 255;
+        return;
+    }
+    if (!ws.writable(c)) return;
+    strlcpy(job.a, sdx.get_name, sizeof(job.a));
+    job.offset = sdx.get_offset;
+    queue_job(JOB_GET, c);
+}
+#else /* no card slot */
+static void sd_error(uint8_t client, const char *op, int err) {
+    char out[64];
+    snprintf(out, sizeof(out), "{\"type\":\"sderr\",\"op\":\"%s\",\"err\":%d}", op, err);
+    ws.sendTXT(client, out);
+}
+static void handle_sd(uint8_t client, const char *) { sd_error(client, "list", SD_NO_CARD); }
+static void sd_put_piece(uint8_t client, const uint8_t *, size_t) { sd_error(client, "put", SD_NO_CARD); }
+static void sd_poll() {}
+#endif
+
 static void on_ws(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
     if (type == WStype_CONNECTED) {
         /* A (re)connecting page gets the latest sweep at once. */
@@ -572,10 +800,13 @@ static void on_ws(uint8_t client, WStype_t type, uint8_t *payload, size_t length
             handle_wifi(text);
         else if (!strcmp(text, "wifi pass"))
             send_passwords(client);
+        else if (!strncmp(text, "sd ", 3))
+            handle_sd(client, text);
         else
             handle_text(text);
     } else if (type == WStype_BIN) {
-        store_noise(payload, length);
+        if (length >= 8 && !memcmp(payload, "SDW1", 4)) sd_put_piece(client, payload, length);
+        else store_noise(payload, length);
     }
 }
 
@@ -611,7 +842,9 @@ static void ws_task(void *) {
     static uint8_t out[HEADER + SWEEP_POINTS];
     static char status_out[sizeof(status_text)];
     uint32_t last_send = 0;
+    esp_task_wdt_add(nullptr);
     for (;;) {
+        esp_task_wdt_reset();
         ws.loop();
         /* Status at least every 2 s, so pages can tell a long sweep from a
          * dead connection (they reconnect after 5 s of silence). */
@@ -644,6 +877,7 @@ static void ws_task(void *) {
             send_all(false, status_out, strlen(status_out));
             last_send = millis();
         }
+        sd_poll();
         vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
@@ -846,8 +1080,25 @@ static void poll_wifi() {
     }
 }
 
+/* Watchdog: the sweep, page and LCD tasks each report in as they go round;
+ * one that hangs for WATCHDOG_S restarts the board instead of leaving it
+ * frozen. The longest steps (a 500 ms dwell, writing a screenshot, waiting
+ * for the LCD's I/O expander) take a few seconds at most. */
+static const unsigned WATCHDOG_S = 30;
+static void start_watchdog() {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    esp_task_wdt_config_t wdt = {};
+    wdt.timeout_ms = WATCHDOG_S * 1000;
+    wdt.trigger_panic = true;
+    if (esp_task_wdt_reconfigure(&wdt) != ESP_OK) esp_task_wdt_init(&wdt);
+#else
+    esp_task_wdt_init(WATCHDOG_S, true);
+#endif
+}
+
 void setup() {
     Serial.begin(115200);
+    start_watchdog();
     lock = xSemaphoreCreateMutex();
     load_settings();
     last.c = config;
@@ -888,5 +1139,13 @@ void setup() {
 void loop() {
     poll_wifi();
     portal_http_poll();
+    /* for the serial monitor: memory and Wi-Fi, every 10 s */
+    static uint32_t last_log;
+    if (millis() - last_log >= 10000) {
+        last_log = millis();
+        Serial.printf("heap %lu (min %lu, largest %lu), wifi %d %s\n", (unsigned long)ESP.getFreeHeap(),
+                      (unsigned long)ESP.getMinFreeHeap(), (unsigned long)ESP.getMaxAllocHeap(), (int)wifi.state,
+                      wifi.ip);
+    }
     delay(2);
 }

@@ -98,5 +98,9 @@ void lcd_push_rows(int y, int rows, int width, const uint16_t *pixels) {
 
 bool lcd_touch(int *, int *) { return false; }
 int lcd_battery_raw() { return -1; }
+/* no card slot used on this board */
+bool lcd_sd_begin() { return false; }
+void lcd_sd_end() {}
+
 bool lcd_user_button() { return digitalRead(PIN_BOOT) == LOW; }
 #endif

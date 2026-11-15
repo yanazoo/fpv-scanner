@@ -40,5 +40,9 @@ void lcd_push_rows(int y, int rows, int width, const uint16_t *pixels);
 void lcd_set_landscape(bool on, bool flip);
 /* First touch point in screen coordinates; false when not touched. */
 bool lcd_touch(int *x, int *y);
+/* The microSD card of the 2.8" board, on the LCD's SPI bus (only the LCD
+ * task may use it; see sd_store.h): mount (false: no usable card), release. */
+bool lcd_sd_begin();
+void lcd_sd_end();
 /* Battery ADC count from the I/O expander; -1 when it cannot be read. */
 int lcd_battery_raw();

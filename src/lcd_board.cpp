@@ -2,6 +2,7 @@
 /* Pin map, expander registers and the ST7789 / CST3530 set-up follow
  * Waveshare's ESP32-C5-Touch-LCD-2.8 Arduino examples (Apache-2.0). */
 #include "lcd_board.h"
+#include <SD.h>
 #include <SPI.h>
 #include <Wire.h>
 #include "config.h"
@@ -9,7 +10,8 @@
 unsigned lcd_expander_errors;
 
 namespace {
-const int PIN_SCLK = 6, PIN_MOSI = 7, PIN_LCD_CS = 10, PIN_LCD_DC = 9, PIN_SD_CS = 23;
+const int PIN_SCLK = 6, PIN_MOSI = 7, PIN_MISO = 8, PIN_LCD_CS = 10, PIN_LCD_DC = 9, PIN_SD_CS = 23;
+const uint32_t SD_HZ = 20000000;
 const int PIN_SDA = 0, PIN_SCL = 1;
 const uint32_t SPI_HZ = 80000000;
 
@@ -103,7 +105,7 @@ bool lcd_board_begin() {
     digitalWrite(PIN_LCD_CS, HIGH);
     digitalWrite(PIN_LCD_DC, HIGH);
     digitalWrite(PIN_SD_CS, HIGH); /* keep the microSD card off the bus */
-    spi.begin(PIN_SCLK, -1, PIN_MOSI, PIN_LCD_CS);
+    spi.begin(PIN_SCLK, PIN_MISO, PIN_MOSI, -1); /* MISO: the microSD card (the LCD is write-only) */
 
     exio_set(EXIO_LCD_RST, false);
     delay(50);
@@ -169,6 +171,33 @@ bool lcd_user_button() { return false; }
 void lcd_push_rows(int y, int rows, int width, const uint16_t *pixels) {
     lcd_window(0, y, width - 1, y + rows - 1);
     lcd_write(true, (const uint8_t *)pixels, (size_t)width * rows * 2);
+}
+
+/* ---- microSD card (on the LCD's SPI bus; used by sd_store.cpp) ---- */
+/* At SD_HZ first; a card that fails there (a long line, interference or a
+ * supply dip while Wi-Fi transmits) gets another try at 4 MHz. */
+bool lcd_sd_begin() {
+    for (uint32_t hz : {SD_HZ, (uint32_t)4000000}) {
+        SD.end();
+        digitalWrite(PIN_SD_CS, HIGH);
+        /* one open file at most (sd_store closes the reader before anything
+         * else): each one costs about 4 KB */
+        if (SD.begin(PIN_SD_CS, spi, hz, "/sd", 1) && SD.cardType() != CARD_NONE) {
+            Serial.printf("SD: mounted at %lu MHz, %s, heap %lu\n", (unsigned long)(hz / 1000000),
+                          SD.cardType() == CARD_SDHC ? "SDHC" : "SD", (unsigned long)ESP.getFreeHeap());
+            return true;
+        }
+        Serial.printf("SD: no card at %lu MHz (heap %lu)\n", (unsigned long)(hz / 1000000),
+                      (unsigned long)ESP.getFreeHeap());
+    }
+    SD.end();
+    digitalWrite(PIN_SD_CS, HIGH);
+    return false;
+}
+
+void lcd_sd_end() {
+    SD.end();
+    digitalWrite(PIN_SD_CS, HIGH);
 }
 
 int lcd_battery_raw() {
