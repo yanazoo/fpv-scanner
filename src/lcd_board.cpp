@@ -174,10 +174,22 @@ void lcd_push_rows(int y, int rows, int width, const uint16_t *pixels) {
 }
 
 /* ---- microSD card (on the LCD's SPI bus; used by sd_store.cpp) ---- */
+/* At SD_HZ first; a card that fails there (a long line, interference or a
+ * supply dip while Wi-Fi transmits) gets another try at 4 MHz. */
 bool lcd_sd_begin() {
+    for (uint32_t hz : {SD_HZ, (uint32_t)4000000}) {
+        SD.end();
+        digitalWrite(PIN_SD_CS, HIGH);
+        if (SD.begin(PIN_SD_CS, spi, hz) && SD.cardType() != CARD_NONE) {
+            Serial.printf("SD: mounted at %lu MHz, %s, heap %lu\n", (unsigned long)(hz / 1000000),
+                          SD.cardType() == CARD_SDHC ? "SDHC" : "SD", (unsigned long)ESP.getFreeHeap());
+            return true;
+        }
+        Serial.printf("SD: no card at %lu MHz (heap %lu)\n", (unsigned long)(hz / 1000000),
+                      (unsigned long)ESP.getFreeHeap());
+    }
     SD.end();
-    if (SD.begin(PIN_SD_CS, spi, SD_HZ) && SD.cardType() != CARD_NONE) return true;
-    SD.end();
+    digitalWrite(PIN_SD_CS, HIGH);
     return false;
 }
 

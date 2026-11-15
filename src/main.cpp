@@ -564,16 +564,63 @@ static bool noise_store_requested, noise_clear_requested;
  *                         answered {"type":"sdack","off":next offset}
  * "sd end"             -> {"type":"sdsaved","name":NAME}
  * "sd get NAME"        -> binary "SDF1" + u32 offset + u32 size + data, in
- *                         pieces sent by the web task as the page takes them
- * "sd ren OLD NEW", "sd del NAME" -> {"type":"sddone","op":...}, then a list
+ *                         pieces sent as the page takes them
+ * "sd ren OLD NEW", "sd del NAME" -> a new list
  * Errors: {"type":"sderr","op":...,"err":SdResult}. The names are checked
- * by sd_store (letters, digits . _ - only, so they need no escaping). */
-static const size_t SD_PIECE = 2048; /* below what writable() promises */
+ * by sd_store (letters, digits . _ - only, so they need no escaping).
+ *
+ * The card is only reached through the LCD task, which can take a while
+ * (mounting a card, a screenshot being written), so the web task never
+ * waits for it: it hands one job at a time to the "sd" task and answers the
+ * page when the job is done, meanwhile sending frames and status as usual. */
+static const size_t SD_PIECE = 2048; /* a download piece: below what writable() promises */
+static const size_t SD_PUT_MAX = 4096;
+enum SdJobOp { JOB_LIST, JOB_PUT, JOB_GET, JOB_REN, JOB_DEL };
+enum SdJobState { JOB_IDLE, JOB_QUEUED, JOB_DONE };
+static struct {
+    volatile SdJobState state = JOB_IDLE; /* IDLE/DONE: the web task's, QUEUED: the sd task's */
+    SdJobOp op;
+    uint8_t client;
+    char a[64], b[64];
+    uint32_t offset, total;
+    size_t size, got;
+    int result, count;
+    uint8_t data[12 + SD_PUT_MAX]; /* put: the data; get: "SDF1" header + the piece */
+    SdEntry files[64];
+} job;
+static TaskHandle_t sd_task_handle;
 static struct {
     uint8_t put_client = 255, get_client = 255;
     char put_name[64], get_name[64];
     uint32_t put_offset, get_offset;
 } sdx;
+
+static void sd_task(void *) {
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (job.state != JOB_QUEUED) continue;
+        switch (job.op) {
+        case JOB_LIST: job.result = sd_list(job.files, 64, &job.count); break;
+        case JOB_PUT: job.result = sd_write(job.a, job.offset, job.data, job.size); break;
+        case JOB_GET:
+            job.total = 0;
+            job.result = sd_read(job.a, job.offset, job.data + 12, SD_PIECE, &job.got, &job.total);
+            break;
+        case JOB_REN: job.result = sd_rename(job.a, job.b); break;
+        case JOB_DEL: job.result = sd_remove(job.a); break;
+        }
+        __sync_synchronize();
+        job.state = JOB_DONE;
+    }
+}
+
+static void queue_job(SdJobOp op, uint8_t client) {
+    job.op = op;
+    job.client = client;
+    __sync_synchronize();
+    job.state = JOB_QUEUED;
+    xTaskNotifyGive(sd_task_handle);
+}
 
 static void sd_error(uint8_t client, const char *op, int err) {
     char out[64];
@@ -581,29 +628,24 @@ static void sd_error(uint8_t client, const char *op, int err) {
     ws.sendTXT(client, out);
 }
 
-static void send_sd_list(uint8_t client) {
-    static SdEntry files[64];
-    static char out[64 * 90 + 64];
-    int count, err = sd_list(files, 64, &count);
-    size_t n = snprintf(out, sizeof(out), "{\"type\":\"sdlist\",\"err\":%d,\"files\":[", err);
-    for (int i = 0; i < count && n < sizeof(out) - 100; i++)
-        n += snprintf(out + n, sizeof(out) - n, "%s{\"n\":\"%s\",\"s\":%lu}", i ? "," : "", files[i].name,
-                      (unsigned long)files[i].size);
-    snprintf(out + n, sizeof(out) - n, "]}");
-    ws.sendTXT(client, out);
+/* A new job is taken only when the last one is done (the page asks one
+ * thing at a time; a second page may have to try again). */
+static bool sd_free(uint8_t client, const char *op) {
+    if (sd_task_handle && job.state == JOB_IDLE) return true;
+    sd_error(client, op, sd_task_handle ? SD_BUSY : SD_NO_CARD);
+    return false;
 }
 
 static void handle_sd(uint8_t client, const char *text) {
     char a[64] = "", b[64] = "", out[128];
     if (!strcmp(text, "sd list")) {
-        send_sd_list(client);
+        if (sd_free(client, "list")) queue_job(JOB_LIST, client);
     } else if (sscanf(text, "sd put %63s", a) == 1) {
         if (!sd_valid_name(a)) return sd_error(client, "put", SD_BAD_NAME);
         sdx.put_client = client;
         sdx.put_offset = 0;
         strlcpy(sdx.put_name, a, sizeof(sdx.put_name));
-        snprintf(out, sizeof(out), "{\"type\":\"sdack\",\"off\":0}");
-        ws.sendTXT(client, out);
+        ws.sendTXT(client, "{\"type\":\"sdack\",\"off\":0}");
     } else if (!strcmp(text, "sd end")) {
         if (sdx.put_client != client || !sdx.put_offset) return sd_error(client, "put", SD_FAIL);
         sdx.put_client = 255;
@@ -615,13 +657,14 @@ static void handle_sd(uint8_t client, const char *text) {
         sdx.get_offset = 0;
         strlcpy(sdx.get_name, a, sizeof(sdx.get_name));
     } else if (sscanf(text, "sd ren %63s %63s", a, b) == 2) {
-        int err = sd_rename(a, b);
-        if (err) return sd_error(client, "ren", err);
-        send_sd_list(client);
+        if (!sd_free(client, "ren")) return;
+        strlcpy(job.a, a, sizeof(job.a));
+        strlcpy(job.b, b, sizeof(job.b));
+        queue_job(JOB_REN, client);
     } else if (sscanf(text, "sd del %63s", a) == 1) {
-        int err = sd_remove(a);
-        if (err) return sd_error(client, "del", err);
-        send_sd_list(client);
+        if (!sd_free(client, "del")) return;
+        strlcpy(job.a, a, sizeof(job.a));
+        queue_job(JOB_DEL, client);
     }
 }
 
@@ -629,41 +672,88 @@ static void handle_sd(uint8_t client, const char *text) {
 static void sd_put_piece(uint8_t client, const uint8_t *data, size_t length) {
     uint32_t offset;
     memcpy(&offset, data + 4, 4);
-    if (sdx.put_client != client || offset != sdx.put_offset || length <= 8) return sd_error(client, "put", SD_FAIL);
-    int err = sd_write(sdx.put_name, offset, data + 8, length - 8);
-    if (err) {
+    if (sdx.put_client != client || offset != sdx.put_offset || length <= 8 || length - 8 > SD_PUT_MAX) {
         sdx.put_client = 255;
-        return sd_error(client, "put", err);
+        return sd_error(client, "put", SD_FAIL);
     }
-    sdx.put_offset += length - 8;
-    char out[48];
-    snprintf(out, sizeof(out), "{\"type\":\"sdack\",\"off\":%lu}", (unsigned long)sdx.put_offset);
+    if (!sd_free(client, "put")) {
+        sdx.put_client = 255;
+        return;
+    }
+    strlcpy(job.a, sdx.put_name, sizeof(job.a));
+    job.offset = offset;
+    job.size = length - 8;
+    memcpy(job.data, data + 8, job.size);
+    queue_job(JOB_PUT, client);
+}
+
+static void send_sd_list(uint8_t client) {
+    static char out[64 * 90 + 64];
+    size_t n = snprintf(out, sizeof(out), "{\"type\":\"sdlist\",\"err\":%d,\"files\":[", job.result);
+    for (int i = 0; !job.result && i < job.count && n < sizeof(out) - 100; i++)
+        n += snprintf(out + n, sizeof(out) - n, "%s{\"n\":\"%s\",\"s\":%lu}", i ? "," : "", job.files[i].name,
+                      (unsigned long)job.files[i].size);
+    snprintf(out + n, sizeof(out) - n, "]}");
     ws.sendTXT(client, out);
 }
 
-/* The next piece of a download, when the page takes it (web task). */
-static void sd_send_piece() {
+/* Web task: answers a finished job, and keeps a download going. */
+static void sd_poll() {
+    if (!sd_task_handle) return;
+    if (job.state == JOB_DONE) {
+        __sync_synchronize();
+        uint8_t c = job.client;
+        bool here = ws.clientIsConnected(c);
+        job.state = JOB_IDLE;
+        switch (job.op) {
+        case JOB_LIST:
+            if (here) send_sd_list(c);
+            break;
+        case JOB_PUT:
+            if (job.result) {
+                sdx.put_client = 255;
+                if (here) sd_error(c, "put", job.result);
+            } else if (sdx.put_client == c) {
+                sdx.put_offset = job.offset + job.size;
+                char out[48];
+                snprintf(out, sizeof(out), "{\"type\":\"sdack\",\"off\":%lu}", (unsigned long)sdx.put_offset);
+                if (here) ws.sendTXT(c, out);
+            }
+            break;
+        case JOB_GET:
+            if (sdx.get_client != c || !here || strcmp(job.a, sdx.get_name)) break; /* replaced or gone */
+            if (job.result || (!job.got && job.offset < job.total)) {
+                sdx.get_client = 255;
+                sd_error(c, "get", job.result ? job.result : SD_FAIL);
+                break;
+            }
+            memcpy(job.data, "SDF1", 4);
+            put32(job.data + 4, job.offset);
+            put32(job.data + 8, job.total);
+            ws.sendBIN(c, job.data, 12 + job.got);
+            sdx.get_offset = job.offset + job.got;
+            if (sdx.get_offset >= job.total) sdx.get_client = 255; /* (an empty file: one empty piece) */
+            break;
+        case JOB_REN:
+        case JOB_DEL:
+            if (job.result) {
+                if (here) sd_error(c, job.op == JOB_REN ? "ren" : "del", job.result);
+            } else if (here) {
+                queue_job(JOB_LIST, c); /* the page shows the new list */
+            }
+            break;
+        }
+    }
     uint8_t c = sdx.get_client;
-    if (c == 255) return;
+    if (c == 255 || job.state != JOB_IDLE) return;
     if (!ws.clientIsConnected(c)) {
         sdx.get_client = 255;
         return;
     }
     if (!ws.writable(c)) return;
-    static uint8_t piece[12 + SD_PIECE];
-    size_t got;
-    uint32_t total = 0;
-    int err = sd_read(sdx.get_name, sdx.get_offset, piece + 12, SD_PIECE, &got, &total);
-    if (err || (!got && sdx.get_offset < total)) {
-        sdx.get_client = 255;
-        return sd_error(c, "get", err ? err : SD_FAIL);
-    }
-    memcpy(piece, "SDF1", 4);
-    put32(piece + 4, sdx.get_offset);
-    put32(piece + 8, total);
-    ws.sendBIN(c, piece, 12 + got);
-    sdx.get_offset += got;
-    if (sdx.get_offset >= total) sdx.get_client = 255; /* (an empty file: one empty piece) */
+    strlcpy(job.a, sdx.get_name, sizeof(job.a));
+    job.offset = sdx.get_offset;
+    queue_job(JOB_GET, c);
 }
 
 static void on_ws(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
@@ -765,7 +855,7 @@ static void ws_task(void *) {
             send_all(false, status_out, strlen(status_out));
             last_send = millis();
         }
-        sd_send_piece();
+        sd_poll();
         vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
@@ -1022,10 +1112,20 @@ void setup() {
      * slow page in a busy loop that would otherwise starve them. */
     xTaskCreatePinnedToCore(ws_task, "ws", 8192, nullptr, 1, nullptr, web_core);
     xTaskCreatePinnedToCore(dns_task, "dns", 4096, nullptr, 3, nullptr, web_core);
+    /* the web page's requests for the microSD card (only on the board with one) */
+    if (sd_available()) xTaskCreatePinnedToCore(sd_task, "sd", 4096, nullptr, 1, &sd_task_handle, web_core);
 }
 
 void loop() {
     poll_wifi();
     portal_http_poll();
+    /* for the serial monitor: memory and Wi-Fi, every 10 s */
+    static uint32_t last_log;
+    if (millis() - last_log >= 10000) {
+        last_log = millis();
+        Serial.printf("heap %lu (min %lu, largest %lu), wifi %d %s\n", (unsigned long)ESP.getFreeHeap(),
+                      (unsigned long)ESP.getMinFreeHeap(), (unsigned long)ESP.getMaxAllocHeap(), (int)wifi.state,
+                      wifi.ip);
+    }
     delay(2);
 }

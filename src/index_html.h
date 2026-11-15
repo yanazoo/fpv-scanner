@@ -230,6 +230,7 @@ function onSd(j){if(j.type==='sdack')return upNext(j.off);
  if(j.type==='sderr'){const t=SDERR[j.err]||'失敗しました';
   if(j.op==='put'){up=null;shotMsg('SDカードに保存できませんでした（'+t+'）。ダウンロードで保存してください','#f85149')}
   else if(j.op==='get'){dl=null;shotMsg('読み込めませんでした（'+t+'）','#f85149')}
+  else if(j.op==='list')sdMsg('一覧を読み込めませんでした: '+t,'#f85149');
   else sdMsg((j.op==='ren'?'名前を変更できませんでした（同じ名前があるときも）: ':'削除できませんでした: ')+t,'#f85149')}}
 const sdMsg=(t,c)=>{$('sdmsg').textContent=t;$('sdmsg').style.color=c||'#8b949e'};
 function sdList(){if(send('sd list'))sdMsg('読み込み中…')}

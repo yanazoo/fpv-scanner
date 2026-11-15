@@ -4,8 +4,9 @@
  * in the card's root folder.
  *
  * The card shares the LCD's SPI bus, so only the LCD task touches it: a call
- * from another task (the web page's) is handed to the LCD task, which runs
- * it in sd_service(), and waits for the result (up to a few seconds). The
+ * from another task is handed to the LCD task, which runs it in sd_service(),
+ * and waits for the result (up to a few seconds), so the web page's requests
+ * are made from a task of their own (main.cpp), never the web task. The
  * card is mounted while in use and released after a few idle seconds, so it
  * can be taken out at any other time. Builds without a card slot answer
  * SD_NO_CARD to everything. */
@@ -32,10 +33,9 @@ int sd_read(const char *name, uint32_t offset, uint8_t *buf, size_t size, size_t
 int sd_write(const char *name, uint32_t offset, const uint8_t *data, size_t size);
 int sd_rename(const char *from, const char *to);
 int sd_remove(const char *name);
-/* The next free SCANnnnn.BMP; SD_OK when `name` got one. */
+/* LCD task only: the next free SCANnnnn.BMP (SD_OK when `name` got one),
+ * and writing a file in pieces (a screenshot). */
 int sd_next_scan_name(char *name, size_t size);
-
-/* LCD task only: write a file in pieces (a screenshot). */
 int sd_create(const char *name);
 bool sd_append(const uint8_t *data, size_t size);
 bool sd_finish();

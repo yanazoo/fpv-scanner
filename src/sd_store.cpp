@@ -242,16 +242,22 @@ bool sd_finish() {
     return true;
 }
 
+/* (LCD task: reads the folder itself, without a list of every file) */
 int sd_next_scan_name(char *name, size_t size) {
-    static SdEntry list[128];
-    int count, result = sd_list(list, 128, &count);
-    if (result) return result;
+    if (!mount()) return SD_NO_CARD;
+    close_reader();
+    File root = SD.open("/");
+    if (!root) return SD_FAIL;
     unsigned next = 1;
-    for (int i = 0; i < count; i++) {
+    for (File f = root.openNextFile(); f; f = root.openNextFile()) {
+        const char *base = f.name();
+        if (*base == '/') base++;
         unsigned n;
         char tail;
-        if (sscanf(list[i].name, "SCAN%4u.BM%c", &n, &tail) == 2 && n >= next) next = n + 1;
+        if (sscanf(base, "SCAN%4u.BM%c", &n, &tail) == 2 && n >= next) next = n + 1;
+        f.close();
     }
+    root.close();
     snprintf(name, size, "SCAN%04u.BMP", next % 10000);
     return SD_OK;
 }
