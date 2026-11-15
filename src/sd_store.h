@@ -11,6 +11,14 @@
  * can be taken out at any other time. Builds without a card slot answer
  * SD_NO_CARD to everything. */
 #include <Arduino.h>
+#include "config.h"
+
+/* Only the 2.8" touch LCD board has a card slot. */
+#if defined(FPV_LCD147) && FPV_LCD147
+#define SD_SLOT 0
+#else
+#define SD_SLOT FPV_LCD
+#endif
 
 enum SdResult { SD_OK = 0, SD_NO_CARD, SD_FAIL, SD_BUSY, SD_BAD_NAME };
 
@@ -42,3 +50,7 @@ bool sd_finish();
 
 /* LCD task: run a request from another task, release the card when idle. */
 void sd_service();
+/* Runs fn in the LCD task at its next sd_service(), without waiting for it
+ * (fn may use the calls above). false: another one is still waiting, or the
+ * LCD task has not started. */
+bool sd_run_later(void (*fn)());

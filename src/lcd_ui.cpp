@@ -730,7 +730,11 @@ void press_wifi(int x, int y) {
 /* ---- saved images on the microSD card: a list (names and sizes) and a
  * viewer for BMP files (the LCD's own screenshots; PNG files, saved from
  * the web page, are shown there) ---- */
-SdEntry files[64];
+/* The list and the viewer's rows take memory only while shown: with Wi-Fi
+ * on, little is left over. */
+const int FILES_MAX = 64;
+SdEntry *files;
+uint8_t *view_rows; /* two image rows */
 int file_count, file_top, file_error;
 char view_name[64];
 uint32_t view_offset, view_stride;
@@ -744,8 +748,23 @@ Rect file_row(int i) { return {0, FILE_Y + i * file_row_h(), scr_w, file_row_h()
 #define BTN_FILES_UP title_button(2)
 
 void open_files() {
-    file_error = sd_list(files, 64, &file_count);
+    if (!files) files = (SdEntry *)malloc(FILES_MAX * sizeof(SdEntry));
+    file_count = 0;
+    file_error = files ? sd_list(files, FILES_MAX, &file_count) : SD_FAIL;
     file_top = 0;
+    screen = FILES;
+}
+
+void close_files() {
+    free(files);
+    files = nullptr;
+    file_count = 0;
+    screen = ADVANCED;
+}
+
+void close_view() {
+    free(view_rows);
+    view_rows = nullptr;
     screen = FILES;
 }
 
@@ -768,6 +787,12 @@ bool open_view(const char *name) {
     uint16_t bpp = h[28] | h[29] << 8;
     if (bpp != 24 || u32(30) != 0 || w <= 0 || w > 1024 || hh == 0) {
         toast("表示できない画像", YELLOW);
+        return false;
+    }
+    free(view_rows);
+    view_rows = (uint8_t *)malloc(2 * 3 * w);
+    if (!view_rows) {
+        toast("メモリ不足", RED);
         return false;
     }
     strlcpy(view_name, name, sizeof(view_name));
@@ -816,7 +841,7 @@ void draw_files() {
 }
 
 void press_files(int x, int y) {
-    if (BTN_BACK.in(x, y)) screen = ADVANCED;
+    if (BTN_BACK.in(x, y)) close_files();
     else if (BTN_FILES_UP.in(x, y)) file_top = max(0, file_top - file_rows());
     else if (BTN_FILES_DOWN.in(x, y)) {
         if (file_top + file_rows() < file_count) file_top += file_rows();
@@ -841,7 +866,8 @@ bool view_row(int sy, uint8_t *out) {
 }
 
 void draw_view() {
-    static uint8_t src[1024 * 3], src2[1024 * 3];
+    if (!view_rows) return;
+    uint8_t *src = view_rows, *src2 = view_rows + 3 * view_w;
     const int h = abs(view_h);
     float k = min((float)scr_w / view_w, (float)scr_h / h);
     int dw = max(1, (int)(view_w * k)), dh = max(1, (int)(h * k));
@@ -1142,7 +1168,6 @@ void render() {
  * to the microSD card at double size (640x480, or 480x640 in portrait), as a
  * 24-bit BMP written bottom row first. Text and lines are doubled; the traces
  * are drawn at the double size, so the graph shows twice the detail. ---- */
-int16_t hi_noise[2 * MAX_PW], hi_peak[2 * MAX_PW], hi_main[2 * MAX_PW];
 
 /* A trace pixel at double size goes over the background, the grid and the
  * channel lines, not over labels and markers. */
@@ -1169,11 +1194,21 @@ void hi_trace(uint8_t *row, int y2, const int16_t *c, uint16_t color, const uint
 
 void save_screen() {
     char name[16], message[40];
+    /* the traces at double size and one image row, only while saving */
+    const size_t hi_bytes = 3 * 2 * MAX_PW * sizeof(int16_t);
+    uint8_t *work = (uint8_t *)malloc(hi_bytes + 2 * LCD_H * 3);
+    if (!work) {
+        toast("メモリ不足", RED);
+        return;
+    }
+    int16_t *hi_noise = (int16_t *)work, *hi_peak = hi_noise + 2 * MAX_PW, *hi_main = hi_peak + 2 * MAX_PW;
+    uint8_t *row = work + hi_bytes;
     toast("保存中…", WHITE, 30000);
     render();
     int error = sd_next_scan_name(name, sizeof(name));
     if (!error) error = sd_create(name);
     if (error) {
+        free(work);
         toast(error == SD_NO_CARD ? "SDカードなし" : "保存できません", RED);
         return;
     }
@@ -1196,7 +1231,6 @@ void save_screen() {
         if (has_noise && nn == N)
             columns(hi_noise, noise + FRAME_HEADER, N, get32(noise + 4) / 1000.0, get32(noise + 8) / 1000.0, 2);
     }
-    static uint8_t row[2 * LCD_H * 3];
     capturing = true;
     for (strip_y = (scr_h - 1) / STRIP * STRIP; strip_y >= 0 && ok; strip_y -= STRIP) {
         memset(buf, 0, scr_w * STRIP * sizeof(uint16_t));
@@ -1222,6 +1256,7 @@ void save_screen() {
         esp_task_wdt_reset();
     }
     capturing = false;
+    free(work);
     if (sd_finish() && ok) {
         snprintf(message, sizeof(message), "保存 %s", name);
         toast(message, GREEN);
@@ -1368,7 +1403,7 @@ void lcd_task(void *) {
         else if (screen == RECEIVER) press_receiver(touch.x, touch.y);
         else if (screen == WIFI) press_wifi(touch.x, touch.y);
         else if (screen == FILES) press_files(touch.x, touch.y);
-        else if (screen == VIEW) screen = FILES;
+        else if (screen == VIEW) close_view();
         else press_advanced(touch.x, touch.y);
         cfg = shared_config(); /* a changed brightness applies at once */
         dirty = urgent = true;

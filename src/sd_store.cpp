@@ -10,7 +10,7 @@ bool sd_valid_name(const char *name) {
     return !strcasecmp(name + n - 4, ".png") || !strcasecmp(name + n - 4, ".bmp");
 }
 
-#if FPV_LCD && !FPV_LCD147
+#if SD_SLOT
 #include <SD.h>
 #include "lcd_board.h"
 
@@ -135,6 +135,7 @@ SemaphoreHandle_t gate;  /* one request at a time */
 SemaphoreHandle_t done;  /* the LCD task finished it */
 portMUX_TYPE handoff = portMUX_INITIALIZER_UNLOCKED;
 Request *pending;        /* waiting for the LCD task (under handoff) */
+void (*later)();         /* sd_run_later() (under handoff) */
 
 int run(Request &r) {
     switch (r.op) {
@@ -182,16 +183,28 @@ void sd_service() {
     portENTER_CRITICAL(&handoff);
     Request *r = pending;
     pending = nullptr;
+    void (*fn)() = later;
+    later = nullptr;
     portEXIT_CRITICAL(&handoff);
     if (r) {
         r->result = run(*r);
         xSemaphoreGive(done);
     }
+    if (fn) fn();
     if (mounted && millis() - last_use > IDLE_MS) {
         close_reader();
         lcd_sd_end();
         mounted = false;
     }
+}
+
+bool sd_run_later(void (*fn)()) {
+    if (!owner) return false;
+    portENTER_CRITICAL(&handoff);
+    bool free = !later;
+    if (free) later = fn;
+    portEXIT_CRITICAL(&handoff);
+    return free;
 }
 
 int sd_list(SdEntry *out, int max, int *count) {
@@ -274,4 +287,5 @@ int sd_create(const char *) { return SD_NO_CARD; }
 bool sd_append(const uint8_t *, size_t) { return false; }
 bool sd_finish() { return false; }
 void sd_service() {}
+bool sd_run_later(void (*)()) { return false; }
 #endif
