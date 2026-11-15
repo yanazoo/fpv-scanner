@@ -18,6 +18,7 @@
 #include "config.h"
 #include "index_html.h"
 #include "portal_http.h"
+#include "sd_store.h"
 #include "sdr_link.h"
 #include "shared.h"
 #if FPV_LCD
@@ -145,6 +146,7 @@ static void load_settings() {
     c.lcd_panel = prefs.getInt("lpanel", c.lcd_panel);
     c.lcd_land = prefs.getBool("lland", c.lcd_land);
     c.lcd_flip = prefs.getBool("lflip", c.lcd_flip);
+    c.shot_sd = prefs.getBool("shotsd", c.shot_sd);
     wifi.on = !WIFI_SWITCHABLE || prefs.getBool("won", true);
     wifi.mode = prefs.getInt("wmode", wifi.mode);
     wifi.wait = prefs.getInt("wwait", wifi.wait);
@@ -184,6 +186,7 @@ static void save_settings() {
     prefs.putInt("lpanel", c.lcd_panel);
     prefs.putBool("lland", c.lcd_land);
     prefs.putBool("lflip", c.lcd_flip);
+    prefs.putBool("shotsd", c.shot_sd);
 }
 
 /* JSON string contents: quotes, backslashes and control characters escaped. */
@@ -229,7 +232,7 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
              "\"tune_ms\":%u,\"measure_ms\":%u,\"bat\":%d,\"bat_low\":%d,"
              "\"lcd\":%d,\"lbright\":%d,\"lsleep\":%d,\"lflip\":%d,\"warn\":%d,"
              "\"wmode\":%d,\"wwait\":%d,\"wssid\":\"%s\",\"wpass\":%d,\"wstate\":%d,\"wfb\":%d,"
-             "\"wip\":\"%s\",\"ap\":\"%s\",\"mdns\":\"%s\",\"wreason\":%u}",
+             "\"wip\":\"%s\",\"ap\":\"%s\",\"mdns\":\"%s\",\"wreason\":%u,\"sd\":%d,\"shotsd\":%d}",
              linked ? "true" : "false", info, c.start_mhz, c.stop_mhz, c.rate_code, c.dwell_ms,
              c.max_hold ? 1 : 0, c.gain, gain_max, steps, (unsigned)(2 * half_use_khz(c.rate_code)), sweep_ms,
              receiver_error, config.cal_tenths, config.bands, has_noise ? "true" : "false", config.markers[0],
@@ -237,7 +240,7 @@ static void set_status(bool linked, const char *info, const SweepConfig &c, unsi
              config.yrange, (unsigned)sweep_tune_ms, (unsigned)sweep_measure_ms, battery_percent, BATTERY_LOW_PERCENT,
              FPV_LCD ? 1 : 0, config.lcd_bright, config.lcd_sleep, config.lcd_flip ? 1 : 0, config.warn_dbfs,
              wifi.mode, wifi.wait, ssid, wifi.pass[0] ? 1 : 0, (int)wifi.state, wifi.fallback ? 1 : 0, wifi.ip,
-             ap_ssid, MDNS_NAME, wifi.reason);
+             ap_ssid, MDNS_NAME, wifi.reason, sd_available() ? 1 : 0, config.shot_sd ? 1 : 0);
     status_dirty = true;
     xSemaphoreGive(lock);
 }
@@ -449,6 +452,7 @@ static void handle_text(const char *text) {
         else if (!strcmp(key, "lpanel")) c.lcd_panel = constrain(value, 0, 30);
         else if (!strcmp(key, "lland")) c.lcd_land = value != 0;
         else if (!strcmp(key, "lflip")) c.lcd_flip = value != 0;
+        else if (!strcmp(key, "shotsd")) c.shot_sd = value != 0;
     }
     if (c.stop_mhz < c.start_mhz + 5) c.stop_mhz = c.start_mhz + 5;
     xSemaphoreTake(lock, portMAX_DELAY);
@@ -554,6 +558,114 @@ static void send_passwords(uint8_t client) {
 static uint8_t noise_request[FRAME_SIZE];
 static bool noise_store_requested, noise_clear_requested;
 
+/* ---- the images on the microSD card, for the page ----
+ * "sd list"            -> {"type":"sdlist","err":0,"files":[{"n":name,"s":size},...]}
+ * "sd put NAME", then binary "SDW1" + u32 offset + data (up to 4 KB), each
+ *                         answered {"type":"sdack","off":next offset}
+ * "sd end"             -> {"type":"sdsaved","name":NAME}
+ * "sd get NAME"        -> binary "SDF1" + u32 offset + u32 size + data, in
+ *                         pieces sent by the web task as the page takes them
+ * "sd ren OLD NEW", "sd del NAME" -> {"type":"sddone","op":...}, then a list
+ * Errors: {"type":"sderr","op":...,"err":SdResult}. The names are checked
+ * by sd_store (letters, digits . _ - only, so they need no escaping). */
+static const size_t SD_PIECE = 2048; /* below what writable() promises */
+static struct {
+    uint8_t put_client = 255, get_client = 255;
+    char put_name[64], get_name[64];
+    uint32_t put_offset, get_offset;
+} sdx;
+
+static void sd_error(uint8_t client, const char *op, int err) {
+    char out[64];
+    snprintf(out, sizeof(out), "{\"type\":\"sderr\",\"op\":\"%s\",\"err\":%d}", op, err);
+    ws.sendTXT(client, out);
+}
+
+static void send_sd_list(uint8_t client) {
+    static SdEntry files[64];
+    static char out[64 * 90 + 64];
+    int count, err = sd_list(files, 64, &count);
+    size_t n = snprintf(out, sizeof(out), "{\"type\":\"sdlist\",\"err\":%d,\"files\":[", err);
+    for (int i = 0; i < count && n < sizeof(out) - 100; i++)
+        n += snprintf(out + n, sizeof(out) - n, "%s{\"n\":\"%s\",\"s\":%lu}", i ? "," : "", files[i].name,
+                      (unsigned long)files[i].size);
+    snprintf(out + n, sizeof(out) - n, "]}");
+    ws.sendTXT(client, out);
+}
+
+static void handle_sd(uint8_t client, const char *text) {
+    char a[64] = "", b[64] = "", out[128];
+    if (!strcmp(text, "sd list")) {
+        send_sd_list(client);
+    } else if (sscanf(text, "sd put %63s", a) == 1) {
+        if (!sd_valid_name(a)) return sd_error(client, "put", SD_BAD_NAME);
+        sdx.put_client = client;
+        sdx.put_offset = 0;
+        strlcpy(sdx.put_name, a, sizeof(sdx.put_name));
+        snprintf(out, sizeof(out), "{\"type\":\"sdack\",\"off\":0}");
+        ws.sendTXT(client, out);
+    } else if (!strcmp(text, "sd end")) {
+        if (sdx.put_client != client || !sdx.put_offset) return sd_error(client, "put", SD_FAIL);
+        sdx.put_client = 255;
+        snprintf(out, sizeof(out), "{\"type\":\"sdsaved\",\"name\":\"%s\"}", sdx.put_name);
+        ws.sendTXT(client, out);
+    } else if (sscanf(text, "sd get %63s", a) == 1) {
+        if (!sd_valid_name(a)) return sd_error(client, "get", SD_BAD_NAME);
+        sdx.get_client = client; /* one download at a time: a new one replaces it */
+        sdx.get_offset = 0;
+        strlcpy(sdx.get_name, a, sizeof(sdx.get_name));
+    } else if (sscanf(text, "sd ren %63s %63s", a, b) == 2) {
+        int err = sd_rename(a, b);
+        if (err) return sd_error(client, "ren", err);
+        send_sd_list(client);
+    } else if (sscanf(text, "sd del %63s", a) == 1) {
+        int err = sd_remove(a);
+        if (err) return sd_error(client, "del", err);
+        send_sd_list(client);
+    }
+}
+
+/* A piece of an upload: it must follow the last one. */
+static void sd_put_piece(uint8_t client, const uint8_t *data, size_t length) {
+    uint32_t offset;
+    memcpy(&offset, data + 4, 4);
+    if (sdx.put_client != client || offset != sdx.put_offset || length <= 8) return sd_error(client, "put", SD_FAIL);
+    int err = sd_write(sdx.put_name, offset, data + 8, length - 8);
+    if (err) {
+        sdx.put_client = 255;
+        return sd_error(client, "put", err);
+    }
+    sdx.put_offset += length - 8;
+    char out[48];
+    snprintf(out, sizeof(out), "{\"type\":\"sdack\",\"off\":%lu}", (unsigned long)sdx.put_offset);
+    ws.sendTXT(client, out);
+}
+
+/* The next piece of a download, when the page takes it (web task). */
+static void sd_send_piece() {
+    uint8_t c = sdx.get_client;
+    if (c == 255) return;
+    if (!ws.clientIsConnected(c)) {
+        sdx.get_client = 255;
+        return;
+    }
+    if (!ws.writable(c)) return;
+    static uint8_t piece[12 + SD_PIECE];
+    size_t got;
+    uint32_t total = 0;
+    int err = sd_read(sdx.get_name, sdx.get_offset, piece + 12, SD_PIECE, &got, &total);
+    if (err || (!got && sdx.get_offset < total)) {
+        sdx.get_client = 255;
+        return sd_error(c, "get", err ? err : SD_FAIL);
+    }
+    memcpy(piece, "SDF1", 4);
+    put32(piece + 4, sdx.get_offset);
+    put32(piece + 8, total);
+    ws.sendBIN(c, piece, 12 + got);
+    sdx.get_offset += got;
+    if (sdx.get_offset >= total) sdx.get_client = 255; /* (an empty file: one empty piece) */
+}
+
 static void on_ws(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
     if (type == WStype_CONNECTED) {
         /* A (re)connecting page gets the latest sweep at once. */
@@ -576,10 +688,13 @@ static void on_ws(uint8_t client, WStype_t type, uint8_t *payload, size_t length
             handle_wifi(text);
         else if (!strcmp(text, "wifi pass"))
             send_passwords(client);
+        else if (!strncmp(text, "sd ", 3))
+            handle_sd(client, text);
         else
             handle_text(text);
     } else if (type == WStype_BIN) {
-        store_noise(payload, length);
+        if (length >= 8 && !memcmp(payload, "SDW1", 4)) sd_put_piece(client, payload, length);
+        else store_noise(payload, length);
     }
 }
 
@@ -650,6 +765,7 @@ static void ws_task(void *) {
             send_all(false, status_out, strlen(status_out));
             last_send = millis();
         }
+        sd_send_piece();
         vTaskDelay(pdMS_TO_TICKS(2));
     }
 }

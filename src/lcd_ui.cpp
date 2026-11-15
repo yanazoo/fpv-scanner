@@ -19,6 +19,7 @@
 #include <esp_task_wdt.h>
 #include "lcd_board.h"
 #include "lcd_font.h"
+#include "sd_store.h"
 #include "shared.h"
 
 namespace {
@@ -161,7 +162,7 @@ unsigned shown_rate = ~0u;
 bool shown_det;
 int shown_gain = -2;
 
-enum Screen { MAIN, SETTINGS, ADVANCED, RECEIVER, WIFI } screen = MAIN;
+enum Screen { MAIN, SETTINGS, ADVANCED, RECEIVER, WIFI, FILES, VIEW } screen = MAIN;
 int active = -1;      /* selected marker, -1 = none (as at start-up) */
 int battery = -1;     /* percent, -1 = unknown */
 bool dragging;
@@ -237,7 +238,6 @@ void toast(const char *message, uint16_t color, uint32_t ms = 2500) {
     toast_color = color;
     toast_until = millis() + ms;
 }
-bool capturing;      /* drawing for a screenshot: no buttons, tab or message */
 bool save_requested; /* the save button was pressed (done by the LCD task) */
 
 void set_settings_layout(bool land);
@@ -290,9 +290,11 @@ void nearest_channel(double f, char *out) {
 /* Each trace is reduced to one y per graph column (maximum of its points),
  * computed once per frame and drawn into every strip. */
 int16_t col_noise[MAX_PW], col_peak[MAX_PW], col_main[MAX_PW];
-void columns(int16_t *out, const uint8_t *t, unsigned n, double a, double b) {
-    for (int x = 0; x < PW; x++) {
-        double fa = f0 + (f1 - f0) * x / PW, fb = f0 + (f1 - f0) * (x + 1) / PW;
+/* `scale` 2: twice the columns and rows (for a screenshot at double size). */
+void columns(int16_t *out, const uint8_t *t, unsigned n, double a, double b, int scale = 1) {
+    const int w = PW * scale;
+    for (int x = 0; x < w; x++) {
+        double fa = f0 + (f1 - f0) * x / w, fb = f0 + (f1 - f0) * (x + 1) / w;
         int i0 = (int)floor((fa - a) / (b - a) * n), i1 = (int)ceil((fb - a) / (b - a) * n) - 1;
         out[x] = -1;
         if (i1 < 0 || i0 >= (int)n) continue;
@@ -300,10 +302,18 @@ void columns(int16_t *out, const uint8_t *t, unsigned n, double a, double b) {
         i1 = min(max(i1, i0), (int)n - 1);
         uint8_t v = 0;
         for (int i = i0; i <= i1; i++) v = max(v, t[i]);
-        if (v) out[x] = dy(dbm(v));
+        if (!v) continue;
+        if (scale == 1) out[x] = dy(dbm(v));
+        else {
+            int y = PY * scale + (int)lroundf((cfg.ytop - dbm(v)) / cfg.yrange * PH * scale);
+            out[x] = constrain(y, PY * scale, (PY + PH) * scale - 1);
+        }
     }
 }
+bool capturing;      /* drawing for a screenshot: no buttons, tab or message;
+                      * the traces are drawn afterwards at double size */
 void plot(const int16_t *c, uint16_t color) {
+    if (capturing) return;
     for (int x = 0; x < PW; x++) {
         if (c[x] < 0) continue;
         if (x && c[x - 1] >= 0) vline(PX + x, c[x - 1], c[x], color);
@@ -639,21 +649,9 @@ void draw_advanced() {
     label(4, "ボタン", s);
     button(half(4, 0), "-1秒");
     button(half(4, 1), "+1秒");
-    /* Wi-Fi state (set on the web page): where to find the page */
-    /* (yellow: host because the client connection failed) */
-    const char *mode = st.wifi_state == 3   ? "OFF"
-                       : st.wifi_state == 1 ? "接続中…"
-                       : st.wifi_state == 2 ? "クライアント"
-                                            : "ホスト";
-    uint16_t c = st.wifi_fallback ? YELLOW : GRAY;
-    snprintf(s, sizeof(s), "Wi-Fi: %s", mode);
-    if (landscape) { /* one line */
-        int x = text(0, row_text_y(5), s, c);
-        text(x + 8, row_text_y(5), st.wifi_ip, c);
-    } else {
-        text(0, row_y(5) + 1, s, c);
-        text(56, row_y(5) + BH - 17, st.wifi_ip, c);
-    }
+    /* the images on the microSD card */
+    label(5, "保存画像");
+    button(half(5, 1), "一覧");
 }
 
 /* ---- Wi-Fi screen: on / off, and the settings made on the web page
@@ -727,6 +725,144 @@ void press_wifi(int x, int y) {
     if (BTN_BACK.in(x, y)) screen = SETTINGS;
     else if (half(0, 0).in(x, y)) shared_set_wifi_on(true);
     else if (half(0, 1).in(x, y)) shared_set_wifi_on(false);
+}
+
+/* ---- saved images on the microSD card: a list (names and sizes) and a
+ * viewer for BMP files (the LCD's own screenshots; PNG files, saved from
+ * the web page, are shown there) ---- */
+SdEntry files[64];
+int file_count, file_top, file_error;
+char view_name[64];
+uint32_t view_offset, view_stride;
+int view_w, view_h; /* height < 0: top row first */
+
+const int FILE_Y = 40;
+int file_row_h() { return landscape ? 32 : 34; }
+int file_rows() { return (scr_h - FILE_Y) / file_row_h(); }
+Rect file_row(int i) { return {0, FILE_Y + i * file_row_h(), scr_w, file_row_h() - 2}; }
+#define BTN_FILES_DOWN title_button(1)
+#define BTN_FILES_UP title_button(2)
+
+void open_files() {
+    file_error = sd_list(files, 64, &file_count);
+    file_top = 0;
+    screen = FILES;
+}
+
+bool is_bmp(const char *name) {
+    size_t n = strlen(name);
+    return n > 4 && !strcasecmp(name + n - 4, ".bmp");
+}
+
+/* Reads the BMP header; false (and a message) for what cannot be shown. */
+bool open_view(const char *name) {
+    uint8_t h[54];
+    size_t got;
+    uint32_t total;
+    if (sd_read(name, 0, h, sizeof(h), &got, &total) || got < sizeof(h) || h[0] != 'B' || h[1] != 'M') {
+        toast("読み込めません", RED);
+        return false;
+    }
+    auto u32 = [&](int at) { return (uint32_t)h[at] | h[at + 1] << 8 | h[at + 2] << 16 | (uint32_t)h[at + 3] << 24; };
+    int32_t w = u32(18), hh = u32(22);
+    uint16_t bpp = h[28] | h[29] << 8;
+    if (bpp != 24 || u32(30) != 0 || w <= 0 || w > 1024 || hh == 0) {
+        toast("表示できない画像", YELLOW);
+        return false;
+    }
+    strlcpy(view_name, name, sizeof(view_name));
+    view_offset = u32(10), view_w = w, view_h = hh;
+    view_stride = (w * 3 + 3) & ~3u;
+    return true;
+}
+
+void draw_files() {
+    char s[24];
+    if (scr_w - 3 * (title_w() + 4) >= 72) text(4, 9, "保存画像", WHITE);
+    button(BTN_BACK, "戻る");
+    button(BTN_FILES_DOWN, "▼");
+    button(BTN_FILES_UP, "▲");
+    if (file_error) {
+        text(8, FILE_Y + 8, file_error == SD_NO_CARD ? "SDカードなし" : "読み込めません", RED);
+        return;
+    }
+    if (!file_count) {
+        text(8, FILE_Y + 8, "保存した画像はありません", GRAY);
+        return;
+    }
+    for (int i = 0; i < file_rows() && file_top + i < file_count; i++) {
+        const SdEntry &e = files[file_top + i];
+        Rect r = file_row(i);
+        fill(r.x, r.y, r.w, r.h, PANEL);
+        int ty = r.y + (r.h - 16) / 2;
+        snprintf(s, sizeof(s), "%luKB", (unsigned long)((e.size + 1023) / 1024));
+        int w = text_width(s) + 12;
+        /* a long name keeps its start and its end: "fpv_2026…5850.png" */
+        char shown[64];
+        strlcpy(shown, e.name, sizeof(shown));
+        int fit = (scr_w - w - 8) / 8, len = strlen(shown);
+        if (len > fit && fit > 12) {
+            const int tail = 8, head = fit - tail - 2;
+            shown[head] = shown[head + 1] = '.';
+            memcpy(shown + head + 2, e.name + len - tail, tail + 1);
+        }
+        text(6, ty, shown, is_bmp(e.name) ? WHITE : GRAY);
+        fill(scr_w - w, r.y, w, r.h, PANEL);
+        text_right(scr_w - 6, ty, s, BLUE);
+    }
+    snprintf(s, sizeof(s), "%d/%d", min(file_top + file_rows(), file_count), file_count);
+    int left = scr_w - 3 * (title_w() + 4) >= 72 ? 4 + text_width("保存画像") + 8 : 4;
+    if (left + text_width(s) <= BTN_FILES_UP.x - 6) text_right(BTN_FILES_UP.x - 6, 9, s, GRAY);
+}
+
+void press_files(int x, int y) {
+    if (BTN_BACK.in(x, y)) screen = ADVANCED;
+    else if (BTN_FILES_UP.in(x, y)) file_top = max(0, file_top - file_rows());
+    else if (BTN_FILES_DOWN.in(x, y)) {
+        if (file_top + file_rows() < file_count) file_top += file_rows();
+    } else if (y >= FILE_Y && !file_error) {
+        int i = file_top + (y - FILE_Y) / file_row_h();
+        if (i >= file_count) return;
+        if (!is_bmp(files[i].name)) toast("PNGはWeb画面で表示", YELLOW);
+        else if (open_view(files[i].name)) screen = VIEW;
+    }
+}
+
+/* The image scaled to fit the screen; shrunk by 2 or more, each screen
+ * pixel is the average of 2x2 image pixels (the LCD's screenshots are
+ * twice its size). A tap goes back. */
+bool view_row(int sy, uint8_t *out) {
+    const int h = abs(view_h);
+    int file_row = view_h > 0 ? h - 1 - sy : sy;
+    size_t got;
+    uint32_t total;
+    return !sd_read(view_name, view_offset + file_row * view_stride, out, view_w * 3, &got, &total) &&
+           got >= (size_t)view_w * 3;
+}
+
+void draw_view() {
+    static uint8_t src[1024 * 3], src2[1024 * 3];
+    const int h = abs(view_h);
+    float k = min((float)scr_w / view_w, (float)scr_h / h);
+    int dw = max(1, (int)(view_w * k)), dh = max(1, (int)(h * k));
+    int ox = (scr_w - dw) / 2, oy = (scr_h - dh) / 2;
+    for (int y = max(strip_y, oy); y < min(strip_y + STRIP, oy + dh); y++) {
+        int sy = min((int)((y - oy) / k), h - 1);
+        bool box = k <= 0.5f && sy + 1 < h;
+        if (!view_row(sy, src) || (box && !view_row(sy + 1, src2))) continue;
+        uint16_t *out = buf + (y - strip_y) * scr_w;
+        for (int x = ox; x < ox + dw; x++) {
+            int sx = min((int)((x - ox) / k), view_w - 1);
+            const uint8_t *p = src + 3 * sx;
+            if (!box || sx + 1 >= view_w) {
+                out[x] = rgb(p[2], p[1], p[0]);
+                continue;
+            }
+            const uint8_t *q = src2 + 3 * sx;
+            out[x] = rgb((p[2] + p[5] + q[2] + q[5]) / 4, (p[1] + p[4] + q[1] + q[4]) / 4,
+                         (p[0] + p[3] + q[0] + q[3]) / 4);
+        }
+    }
 }
 
 /* ---- touch ---- */
@@ -819,6 +955,7 @@ void press_advanced(int x, int y) {
     else if (half(2, 1).in(x, y)) step("cfg lbright=%d", min(cfg.lcd_bright + 10, 100));
     else if (half(4, 0).in(x, y)) step("cfg lpanel=%d", max(cfg.lcd_panel - 1, 0));
     else if (half(4, 1).in(x, y)) step("cfg lpanel=%d", min(cfg.lcd_panel + 1, 30));
+    else if (half(5, 1).in(x, y)) open_files();
     else
         for (int i = 0; i < 4; i++) {
             if (col(1, i).in(x, y)) step("cfg warn=%d", constrain(cfg.warn_dbfs + WARN[i], -60, 0));
@@ -904,7 +1041,7 @@ const uint32_t RELEASE_MS = 60;
 /* A touch acts once its position has settled (the first contact point is
  * the least accurate): on the second report or after this time, or else when
  * the finger is lifted. */
-const uint32_t SETTLE_MS = 30;
+const uint32_t SETTLE_MS = 15;
 /* A new touch this soon after a release continues the one before (a touch
  * that broke up), so it does not act again. */
 const uint32_t REJOIN_MS = 90;
@@ -984,6 +1121,8 @@ void render() {
         else if (screen == SETTINGS) draw_settings();
         else if (screen == RECEIVER) draw_receiver();
         else if (screen == WIFI) draw_wifi();
+        else if (screen == FILES) draw_files();
+        else if (screen == VIEW) draw_view();
         else draw_advanced();
         /* a strip that looks as it did the last time is not sent again */
         int rows = min(STRIP, scr_h - strip_y), i = strip_y / STRIP;
@@ -1000,42 +1139,90 @@ void render() {
 }
 
 /* ---- screenshot of the main screen (graph and markers, without the buttons)
- * to the microSD card: a 24-bit BMP, written bottom row first ---- */
+ * to the microSD card at double size (640x480, or 480x640 in portrait), as a
+ * 24-bit BMP written bottom row first. Text and lines are doubled; the traces
+ * are drawn at the double size, so the graph shows twice the detail. ---- */
+int16_t hi_noise[2 * MAX_PW], hi_peak[2 * MAX_PW], hi_main[2 * MAX_PW];
+
+/* A trace pixel at double size goes over the background, the grid and the
+ * channel lines, not over labels and markers. */
+bool under_trace(uint16_t c) {
+    if (c == BLACK || c == GRID) return true;
+    for (int b = 0; b < 5; b++)
+        if (c == dim(BCOL[b])) return true;
+    return false;
+}
+
+void hi_trace(uint8_t *row, int y2, const int16_t *c, uint16_t color, const uint16_t *base, int out_w) {
+    uint8_t b = (color & 31) * 255 / 31, g = (color >> 5 & 63) * 255 / 63, r = (color >> 11) * 255 / 31;
+    for (int x = 0; x < 2 * PW; x++) {
+        int y = c[x];
+        if (y < 0) continue;
+        int lo = y, hi = y;
+        if (x && c[x - 1] >= 0) lo = min(y, (int)c[x - 1]), hi = max(y, (int)c[x - 1]);
+        if (y2 < lo || y2 > hi) continue;
+        int X = 2 * PX + x;
+        if (X >= out_w || !under_trace(base[X / 2])) continue;
+        row[3 * X] = b, row[3 * X + 1] = g, row[3 * X + 2] = r;
+    }
+}
+
 void save_screen() {
     char name[16], message[40];
-    toast("保存中…", WHITE, 10000);
+    toast("保存中…", WHITE, 30000);
     render();
-    int error = lcd_sd_create(name, sizeof(name));
+    int error = sd_next_scan_name(name, sizeof(name));
+    if (!error) error = sd_create(name);
     if (error) {
-        toast(error == 1 ? "SDカードなし" : "保存できません", RED);
+        toast(error == SD_NO_CARD ? "SDカードなし" : "保存できません", RED);
         return;
     }
-    const uint32_t row_bytes = scr_w * 3, size = 54 + row_bytes * scr_h; /* rows are multiples of 4 bytes */
+    const int W = 2 * scr_w, H = 2 * scr_h;
+    const uint32_t row_bytes = W * 3, size = 54 + row_bytes * H; /* rows are multiples of 4 bytes */
     uint8_t head[54] = {'B', 'M'};
     auto put = [&](int at, uint32_t v, int n) {
         for (int k = 0; k < n; k++) head[at + k] = v >> (8 * k);
     };
-    put(2, size, 4), put(10, 54, 4), put(14, 40, 4), put(18, scr_w, 4), put(22, scr_h, 4);
-    put(26, 1, 2), put(28, 24, 2), put(34, row_bytes * scr_h, 4), put(38, 2835, 4), put(42, 2835, 4);
-    lcd_sd_write(head, sizeof(head));
-    static uint8_t row[LCD_H * 3];
+    put(2, size, 4), put(10, 54, 4), put(14, 40, 4), put(18, W, 4), put(22, H, 4);
+    put(26, 1, 2), put(28, 24, 2), put(34, row_bytes * H, 4), put(38, 5670, 4), put(42, 5670, 4);
+    bool ok = sd_append(head, sizeof(head));
+    /* the traces at double size */
+    for (int x = 0; x < 2 * PW; x++) hi_noise[x] = hi_peak[x] = hi_main[x] = -1;
+    if (have) {
+        columns(hi_main, trace(), N, f0, f1, 2);
+        if (cfg.hold) columns(hi_peak, peak, N, f0, f1, 2);
+        uint16_t nn;
+        memcpy(&nn, noise + 12, 2);
+        if (has_noise && nn == N)
+            columns(hi_noise, noise + FRAME_HEADER, N, get32(noise + 4) / 1000.0, get32(noise + 8) / 1000.0, 2);
+    }
+    static uint8_t row[2 * LCD_H * 3];
     capturing = true;
-    for (strip_y = (scr_h - 1) / STRIP * STRIP; strip_y >= 0; strip_y -= STRIP) {
+    for (strip_y = (scr_h - 1) / STRIP * STRIP; strip_y >= 0 && ok; strip_y -= STRIP) {
         memset(buf, 0, scr_w * STRIP * sizeof(uint16_t));
         draw_main();
-        for (int r = min(STRIP, scr_h - strip_y) - 1; r >= 0; r--) {
+        for (int r = min(STRIP, scr_h - strip_y) - 1; r >= 0 && ok; r--) {
             const uint16_t *px = buf + r * scr_w;
-            for (int x = 0; x < scr_w; x++) {
-                uint16_t c = px[x];
-                row[3 * x] = (c & 31) * 255 / 31, row[3 * x + 1] = (c >> 5 & 63) * 255 / 63,
-                        row[3 * x + 2] = (c >> 11) * 255 / 31;
+            for (int half = 1; half >= 0; half--) { /* each row twice, the lower one first */
+                for (int x = 0; x < scr_w; x++) {
+                    uint16_t c = px[x];
+                    uint8_t b = (c & 31) * 255 / 31, g = (c >> 5 & 63) * 255 / 63, rr = (c >> 11) * 255 / 31;
+                    row[6 * x] = row[6 * x + 3] = b, row[6 * x + 1] = row[6 * x + 4] = g,
+                                  row[6 * x + 2] = row[6 * x + 5] = rr;
+                }
+                int y2 = 2 * (strip_y + r) + half;
+                if (y2 >= 2 * PY && y2 < 2 * (PY + PH)) {
+                    if (has_noise) hi_trace(row, y2, hi_noise, NOISE, px, W);
+                    if (cfg.hold) hi_trace(row, y2, hi_peak, PEAK, px, W);
+                    hi_trace(row, y2, hi_main, cfg.avg ? BLUE : YELLOW, px, W);
+                }
+                ok = sd_append(row, row_bytes);
             }
-            lcd_sd_write(row, row_bytes);
         }
         esp_task_wdt_reset();
     }
     capturing = false;
-    if (lcd_sd_close()) {
+    if (sd_finish() && ok) {
         snprintf(message, sizeof(message), "保存 %s", name);
         toast(message, GREEN);
     } else {
@@ -1180,6 +1367,8 @@ void lcd_task(void *) {
         else if (screen == SETTINGS) press_settings(touch.x, touch.y);
         else if (screen == RECEIVER) press_receiver(touch.x, touch.y);
         else if (screen == WIFI) press_wifi(touch.x, touch.y);
+        else if (screen == FILES) press_files(touch.x, touch.y);
+        else if (screen == VIEW) screen = FILES;
         else press_advanced(touch.x, touch.y);
         cfg = shared_config(); /* a changed brightness applies at once */
         dirty = urgent = true;
@@ -1187,6 +1376,7 @@ void lcd_task(void *) {
     esp_task_wdt_add(nullptr);
     for (;;) {
         esp_task_wdt_reset();
+        sd_service(); /* the web page's requests for the card */
         poll_touch();
         if (touch.pressed) {
             touch.pressed = false;
@@ -1252,7 +1442,7 @@ void lcd_task(void *) {
         if (s != seq) {
             seq = s;
             if (seq) take_frame();
-            dirty = true;
+            if (screen == MAIN) dirty = true; /* only the main screen shows the sweep */
         }
         uint32_t now = millis();
         if (now - last_battery >= BATTERY_READ_MS) {
@@ -1293,17 +1483,20 @@ void lcd_task(void *) {
         /* a low battery blinks: redraw every half second */
         if (battery >= 0 && battery < BATTERY_LOW_PERCENT && now / 500 != last_draw / 500) dirty = true;
         /* at once after a touch; new sweep data at most every 80 ms */
-        if (sliding || urgent || (dirty && now - last_draw >= 80) || now - last_draw >= 1000) {
+        /* (the viewer reads its image from the card: only when asked) */
+        if (sliding || urgent || (dirty && now - last_draw >= 80) || (screen != VIEW && now - last_draw >= 1000)) {
             render();
             last_draw = millis();
             dirty = urgent = false;
         }
-        /* the touch panel is read every few ms, so that short or weak
+        /* the touch panel is read every 2 ms, so that short or weak
          * touches (through a case's window) are not missed */
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
 } // namespace
 
-void lcd_ui_begin() { xTaskCreatePinnedToCore(lcd_task, "lcd", 8192, nullptr, 1, nullptr, 0); }
+/* Priority 2, as the sweep: at a lower one, the sweep reading the receiver's
+ * data kept the LCD (and its touch panel) waiting. */
+void lcd_ui_begin() { xTaskCreatePinnedToCore(lcd_task, "lcd", 8192, nullptr, 2, nullptr, 0); }
 #endif

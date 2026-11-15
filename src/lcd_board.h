@@ -40,14 +40,9 @@ void lcd_push_rows(int y, int rows, int width, const uint16_t *pixels);
 void lcd_set_landscape(bool on, bool flip);
 /* First touch point in screen coordinates; false when not touched. */
 bool lcd_touch(int *x, int *y);
-/* Screenshots on the microSD card (2.8" board; it shares the LCD's SPI bus,
- * so only the LCD task may call these). lcd_sd_create() mounts the card and
- * creates the next free SCANnnnn.BMP in its root (the name goes to `name`);
- * returns 0, 1 when there is no usable card, 2 when the file cannot be
- * created. lcd_sd_write() appends, lcd_sd_close() closes the file and
- * releases the card; both return false after a write error. */
-int lcd_sd_create(char *name, size_t size);
-bool lcd_sd_write(const uint8_t *data, size_t size);
-bool lcd_sd_close();
+/* The microSD card of the 2.8" board, on the LCD's SPI bus (only the LCD
+ * task may use it; see sd_store.h): mount (false: no usable card), release. */
+bool lcd_sd_begin();
+void lcd_sd_end();
 /* Battery ADC count from the I/O expander; -1 when it cannot be read. */
 int lcd_battery_raw();

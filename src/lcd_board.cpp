@@ -173,52 +173,17 @@ void lcd_push_rows(int y, int rows, int width, const uint16_t *pixels) {
     lcd_write(true, (const uint8_t *)pixels, (size_t)width * rows * 2);
 }
 
-/* ---- microSD card: mounted only while a screenshot is written, so the card
- * can be put in or taken out at any other time ---- */
-static File sd_file;
-static bool sd_failed;
-
-int lcd_sd_create(char *name, size_t size) {
+/* ---- microSD card (on the LCD's SPI bus; used by sd_store.cpp) ---- */
+bool lcd_sd_begin() {
     SD.end();
-    if (!SD.begin(PIN_SD_CS, spi, SD_HZ) || SD.cardType() == CARD_NONE) {
-        SD.end();
-        return 1;
-    }
-    /* the number after the highest SCANnnnn.BMP in the root */
-    unsigned next = 1;
-    File root = SD.open("/");
-    for (File f = root.openNextFile(); f; f = root.openNextFile()) {
-        unsigned n;
-        char tail;
-        const char *base = f.name();
-        if (*base == '/') base++;
-        if (!f.isDirectory() && sscanf(base, "SCAN%4u.BM%c", &n, &tail) == 2 && n >= next) next = n + 1;
-        f.close();
-    }
-    root.close();
-    snprintf(name, size, "SCAN%04u.BMP", next % 10000);
-    char path[24];
-    snprintf(path, sizeof(path), "/%s", name);
-    sd_file = SD.open(path, FILE_WRITE);
-    sd_failed = false;
-    if (!sd_file) {
-        SD.end();
-        return 2;
-    }
-    return 0;
+    if (SD.begin(PIN_SD_CS, spi, SD_HZ) && SD.cardType() != CARD_NONE) return true;
+    SD.end();
+    return false;
 }
 
-bool lcd_sd_write(const uint8_t *data, size_t size) {
-    if (!sd_file || sd_failed) return false;
-    if (sd_file.write(data, size) != size) sd_failed = true;
-    return !sd_failed;
-}
-
-bool lcd_sd_close() {
-    if (sd_file) sd_file.close();
+void lcd_sd_end() {
     SD.end();
     digitalWrite(PIN_SD_CS, HIGH);
-    return !sd_failed;
 }
 
 int lcd_battery_raw() {
