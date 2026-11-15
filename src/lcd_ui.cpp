@@ -162,7 +162,7 @@ unsigned shown_rate = ~0u;
 bool shown_det;
 int shown_gain = -2;
 
-enum Screen { MAIN, SETTINGS, ADVANCED, RECEIVER, WIFI, FILES, VIEW } screen = MAIN;
+enum Screen { MAIN, SETTINGS, ADVANCED, RECEIVER, WIFI, FILES, VIEW, RENAME } screen = MAIN;
 int active = -1;      /* selected marker, -1 = none (as at start-up) */
 int battery = -1;     /* percent, -1 = unknown */
 bool dragging;
@@ -239,6 +239,15 @@ void toast(const char *message, uint16_t color, uint32_t ms = 2500) {
     toast_until = millis() + ms;
 }
 bool save_requested; /* the save button was pressed (done by the LCD task) */
+/* The message, centred on (cx, cy): over the graph, or mid-screen. */
+void draw_toast(int cx, int cy) {
+    if (!toast_text[0]) return;
+    int w = text_width(toast_text) + 16;
+    fill(cx - w / 2, cy - 14, w, 28, PANEL);
+    hline(cx - w / 2, cx + w / 2 - 1, cy - 14, BORDER);
+    hline(cx - w / 2, cx + w / 2 - 1, cy + 13, BORDER);
+    text_center(cx, cy - 8, toast_text, toast_color);
+}
 
 void set_settings_layout(bool land);
 void set_layout(bool land) {
@@ -409,13 +418,7 @@ void draw_main() {
         text(PX, PY + PH - 16, "ゲイン範囲外→自動", YELLOW);
     }
 
-    if (toast_text[0] && !capturing) {
-        int w = text_width(toast_text) + 16, cx = PX + PW / 2, cy = PY + PH / 2;
-        fill(cx - w / 2, cy - 14, w, 28, PANEL);
-        hline(cx - w / 2, cx + w / 2 - 1, cy - 14, BORDER);
-        hline(cx - w / 2, cx + w / 2 - 1, cy + 13, BORDER);
-        text_center(cx, cy - 8, toast_text, toast_color);
-    }
+    if (!capturing) draw_toast(PX + PW / 2, PY + PH / 2);
 
     if (landscape) {
         /* markers in one row of four cells: a bar in the marker's colour
@@ -755,6 +758,13 @@ void open_files() {
     screen = FILES;
 }
 
+/* The list read again (after a rename or a delete), on the same page. */
+void refresh_files() {
+    int top = file_top;
+    open_files();
+    file_top = max(0, min(top, file_count - 1));
+}
+
 void close_files() {
     free(files);
     files = nullptr;
@@ -853,9 +863,15 @@ void press_files(int x, int y) {
     }
 }
 
-/* The image scaled to fit the screen; shrunk by 2 or more, each screen
- * pixel is the average of 2x2 image pixels (the LCD's screenshots are
- * twice its size). A tap goes back. */
+/* The image scaled to fit above a bar of buttons (back, rename, delete);
+ * shrunk by 2 or more, each screen pixel is the average of 2x2 image pixels
+ * (the LCD's screenshots are twice its size). */
+const int VIEW_BAR = 40;
+bool delete_armed; /* 削除 pressed once: 本当に削除 */
+Rect view_button(int i) {
+    int w = (scr_w - 8) / 3;
+    return {i * (w + 4), scr_h - VIEW_BAR + 4, w, VIEW_BAR - 4};
+}
 bool view_row(int sy, uint8_t *out) {
     const int h = abs(view_h);
     int file_row = view_h > 0 ? h - 1 - sy : sy;
@@ -868,10 +884,10 @@ bool view_row(int sy, uint8_t *out) {
 void draw_view() {
     if (!view_rows) return;
     uint8_t *src = view_rows, *src2 = view_rows + 3 * view_w;
-    const int h = abs(view_h);
-    float k = min((float)scr_w / view_w, (float)scr_h / h);
+    const int h = abs(view_h), area = scr_h - VIEW_BAR;
+    float k = min((float)scr_w / view_w, (float)area / h);
     int dw = max(1, (int)(view_w * k)), dh = max(1, (int)(h * k));
-    int ox = (scr_w - dw) / 2, oy = (scr_h - dh) / 2;
+    int ox = (scr_w - dw) / 2, oy = (area - dh) / 2;
     for (int y = max(strip_y, oy); y < min(strip_y + STRIP, oy + dh); y++) {
         int sy = min((int)((y - oy) / k), h - 1);
         bool box = k <= 0.5f && sy + 1 < h;
@@ -888,6 +904,16 @@ void draw_view() {
             out[x] = rgb((p[2] + p[5] + q[2] + q[5]) / 4, (p[1] + p[4] + q[1] + q[4]) / 4,
                          (p[0] + p[3] + q[0] + q[3]) / 4);
         }
+    }
+    button(view_button(0), "戻る");
+    button(view_button(1), "名前変更");
+    Rect d = view_button(2);
+    if (!delete_armed) {
+        button(d, "削除");
+    } else { /* the second press deletes */
+        fill(d.x, d.y, d.w, d.h, RED);
+        const char *sure = text_width("本当に削除") + 4 <= d.w ? "本当に削除" : "削除確定";
+        text_center(d.x + d.w / 2, d.y + (d.h - 16) / 2, sure, WHITE);
     }
 }
 
@@ -926,6 +952,110 @@ bool in_graph(int x, int y) { return y >= PY && y < PY + PH && x >= PX && x < PX
 
 /* A tap on the main screen, on release (the graph is handled on press, by
  * dragging the selected marker). */
+/* ---- the image viewer's buttons, and a keyboard for a new file name
+ * (letters, digits, _ and -; the extension stays) ---- */
+char kb_name[64];
+int kb_len;
+bool kb_shift;
+const char *view_ext() {
+    const char *dot = strrchr(view_name, '.');
+    return dot ? dot : "";
+}
+int kb_max() { return 60 - (int)strlen(view_ext()); }
+
+void press_view(int x, int y) {
+    bool armed = delete_armed;
+    delete_armed = false; /* anything else than 本当に削除 cancels it */
+    if (view_button(0).in(x, y)) {
+        close_view();
+    } else if (view_button(1).in(x, y)) {
+        size_t base = strlen(view_name) - strlen(view_ext());
+        kb_len = min((int)base, kb_max());
+        memcpy(kb_name, view_name, kb_len);
+        kb_name[kb_len] = '\0';
+        kb_shift = false;
+        screen = RENAME;
+    } else if (view_button(2).in(x, y)) {
+        if (!armed) {
+            delete_armed = true;
+        } else if (sd_remove(view_name) == SD_OK) {
+            close_view();
+            refresh_files();
+            toast("削除しました", GREEN);
+        } else {
+            toast("削除できません", RED);
+        }
+    }
+}
+
+const int KB_TOP = 44;
+const char *const KB_ROWS[4] = {"1234567890", "qwertyuiop", "asdfghjkl-", " zxcvbnm_ "};
+int kb_key_h() { return (scr_h - KB_TOP - 2) / 5; }
+Rect kb_key(int row, int col, int span = 1) {
+    int w = scr_w / 10, h = kb_key_h();
+    return {col * w + 1, KB_TOP + row * h + 1, span * w - 2, h - 2};
+}
+char kb_char(int row, int col) {
+    char c = KB_ROWS[row][col];
+    return kb_shift && c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c;
+}
+
+void draw_rename() {
+    /* the name (its end when long) with the extension, and a cursor */
+    fill(0, 0, scr_w, 38, PANEL);
+    const char *ext = view_ext();
+    int fit = (scr_w - 16) / 8 - (int)strlen(ext) - 1;
+    const char *shown = kb_name + max(0, kb_len - fit);
+    text(6, 11, shown, WHITE);
+    int x = 6 + 8 * (int)strlen(shown);
+    vline(x, 9, 28, ACCENT);
+    text(x + 2, 11, ext, GRAY);
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 10; c++) {
+            char label[2] = {kb_char(r, c), 0};
+            if (r == 3 && c == 0) button(kb_key(r, c), "Aa", kb_shift);
+            else if (r == 3 && c == 9) button(kb_key(r, c), "←");
+            else button(kb_key(r, c), label);
+        }
+    button(kb_key(4, 0, 5), "取消");
+    button(kb_key(4, 5, 5), "決定", true);
+}
+
+void press_rename(int x, int y) {
+    if (y < KB_TOP) return;
+    int r = (y - KB_TOP) / kb_key_h(), c = constrain(x / (scr_w / 10), 0, 9);
+    if (r >= 4) {
+        if (c < 5) { /* cancel */
+            screen = VIEW;
+            return;
+        }
+        char name[64];
+        snprintf(name, sizeof(name), "%s%s", kb_name, view_ext());
+        if (!kb_len) {
+            toast("名前を入力してください", YELLOW);
+        } else if (!strcmp(name, view_name)) {
+            screen = VIEW;
+        } else if (sd_rename(view_name, name) == SD_OK) {
+            strlcpy(view_name, name, sizeof(view_name));
+            refresh_files();
+            screen = VIEW;
+            toast("名前を変更しました", GREEN);
+        } else {
+            toast("変更できません", RED); /* (a file of that name exists) */
+        }
+        return;
+    }
+    if (r == 3 && c == 0) {
+        kb_shift = !kb_shift;
+    } else if (r == 3 && c == 9) {
+        if (kb_len) kb_name[--kb_len] = '\0';
+        repeatable = true; /* held down: deletes on */
+    } else if (kb_len < kb_max()) {
+        kb_name[kb_len++] = kb_char(r, c);
+        kb_name[kb_len] = '\0';
+    }
+}
+
 void press_main(int x, int y) {
     if (in_graph(x, y)) {
         if (landscape && active < 0) open_panel(); /* the graph has nothing else to do */
@@ -1149,7 +1279,9 @@ void render() {
         else if (screen == WIFI) draw_wifi();
         else if (screen == FILES) draw_files();
         else if (screen == VIEW) draw_view();
+        else if (screen == RENAME) draw_rename();
         else draw_advanced();
+        if (screen != MAIN) draw_toast(scr_w / 2, scr_h / 2);
         /* a strip that looks as it did the last time is not sent again */
         int rows = min(STRIP, scr_h - strip_y), i = strip_y / STRIP;
         uint32_t h = 2166136261u;
@@ -1403,7 +1535,8 @@ void lcd_task(void *) {
         else if (screen == RECEIVER) press_receiver(touch.x, touch.y);
         else if (screen == WIFI) press_wifi(touch.x, touch.y);
         else if (screen == FILES) press_files(touch.x, touch.y);
-        else if (screen == VIEW) close_view();
+        else if (screen == VIEW) press_view(touch.x, touch.y);
+        else if (screen == RENAME) press_rename(touch.x, touch.y);
         else press_advanced(touch.x, touch.y);
         cfg = shared_config(); /* a changed brightness applies at once */
         dirty = urgent = true;
