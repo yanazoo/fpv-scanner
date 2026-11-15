@@ -711,10 +711,19 @@ static void sd_put_piece(uint8_t client, const uint8_t *data, size_t length) {
 
 /* Web task: answers a finished job, and keeps a download going. */
 static void sd_poll() {
+    static uint32_t held_since; /* a finished job waiting for its page to take more */
     if (job.state == JOB_DONE) {
         __sync_synchronize();
         uint8_t c = job.client;
         bool here = ws.clientIsConnected(c);
+        /* The answer waits (up to 3 s) until the page's socket takes it: a
+         * write that does not fit makes the library wait for it, up to 5 s,
+         * holding up every page (seen with two pages on the access point). */
+        if (here && !ws.writable(c)) {
+            if (!held_since) held_since = millis() | 1;
+            if (millis() - held_since < 3000) return;
+        }
+        held_since = 0;
         job.state = JOB_IDLE;
         switch (job.op) {
         case JOB_LIST:

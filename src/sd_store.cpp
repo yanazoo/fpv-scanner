@@ -83,7 +83,7 @@ int do_read(const char *name, uint32_t offset, uint8_t *buf, size_t size, size_t
         path_of(name, path);
         /* whole sectors at a time when memory allows (the LCD's viewer reads
          * a lot): much quicker than 512 bytes at a time */
-        reader = open_file(path, FILE_READ, ESP.getFreeHeap() > 30000 ? 4096 : 512);
+        reader = open_file(path, FILE_READ, heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) > 16384 ? 4096 : 512);
         if (!reader) return SD_FAIL;
         strlcpy(reader_name, name, sizeof(reader_name));
     }
