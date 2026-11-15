@@ -41,6 +41,10 @@ int sd_read(const char *name, uint32_t offset, uint8_t *buf, size_t size, size_t
 int sd_write(const char *name, uint32_t offset, const uint8_t *data, size_t size);
 int sd_rename(const char *from, const char *to);
 int sd_remove(const char *name);
+/* LCD task only: the list as the web page's JSON entries
+ * ({"n":name,"s":size},... in the folder's order) into out, without a list
+ * of every file in memory; *count is the number written. */
+int sd_list_json(char *out, size_t size, int *count);
 /* LCD task only: the next free SCANnnnn.BMP (SD_OK when `name` got one),
  * and writing a file in pieces (a screenshot). */
 int sd_next_scan_name(char *name, size_t size);

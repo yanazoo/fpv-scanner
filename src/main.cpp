@@ -598,18 +598,16 @@ static struct {
 
 /* list: the reply, made here so that the list of files is freed at once */
 static void list_job() {
-    const int MAX = 64;
-    SdEntry *files = (SdEntry *)malloc(MAX * sizeof(SdEntry));
-    int count = 0;
-    job.result = files ? sd_list(files, MAX, &count) : SD_FAIL;
     char *out = (char *)job.data;
-    const size_t size = sizeof(job.data);
-    size_t n = snprintf(out, size, "{\"type\":\"sdlist\",\"err\":%d,\"files\":[", job.result);
-    for (int i = 0; !job.result && i < count && n + 100 < size; i++)
-        n += snprintf(out + n, size - n, "%s{\"n\":\"%s\",\"s\":%lu}", i ? "," : "", files[i].name,
-                      (unsigned long)files[i].size);
-    snprintf(out + n, size - n, "]}");
-    free(files);
+    const size_t size = sizeof(job.data), head = 48; /* room for {"type":"sdlist","err":N,"files":[ */
+    int count;
+    job.result = sd_list_json(out + head, size - head - 4, &count);
+    char start[head];
+    int n = snprintf(start, sizeof(start), "{\"type\":\"sdlist\",\"err\":%d,\"files\":[", job.result);
+    size_t body = job.result ? 0 : strlen(out + head);
+    memmove(out + n, out + head, body); /* (the page sorts the list) */
+    memcpy(out, start, n);
+    memcpy(out + n + body, "]}", 3);
 }
 
 /* LCD task (sd_run_later): carries out the job. */
@@ -1146,15 +1144,26 @@ void setup() {
 }
 
 void loop() {
+    /* the loop (pages, Wi-Fi, this log) is watched too: stuck for 30 s, the
+     * board restarts and the serial monitor shows where it was stuck */
+    static bool watched = esp_task_wdt_add(nullptr) == ESP_OK;
+    if (watched) esp_task_wdt_reset();
     poll_wifi();
     portal_http_poll();
     /* for the serial monitor: memory and Wi-Fi, every 10 s */
     static uint32_t last_log;
     if (millis() - last_log >= 10000) {
         last_log = millis();
-        Serial.printf("heap %lu (min %lu, largest %lu), wifi %d %s\n", (unsigned long)ESP.getFreeHeap(),
+        Serial.printf("heap %lu (min %lu, largest %lu), wifi %d %s, stations %d", (unsigned long)ESP.getFreeHeap(),
                       (unsigned long)ESP.getMinFreeHeap(), (unsigned long)ESP.getMaxAllocHeap(), (int)wifi.state,
-                      wifi.ip);
+                      wifi.ip, wifi.state == NET_HOST ? WiFi.softAPgetStationNum() : -1);
+        /* the least stack each task has had left (bytes) */
+        Serial.print(", stack left");
+        for (const char *name : {"loopTask", "ws", "sweep", "lcd", "dns"}) {
+            TaskHandle_t t = xTaskGetHandle(name);
+            if (t) Serial.printf(" %s %u", name, (unsigned)uxTaskGetStackHighWaterMark(t));
+        }
+        Serial.println();
     }
     delay(2);
 }

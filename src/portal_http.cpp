@@ -113,9 +113,18 @@ void portal_http_poll() {
         target->since = millis();
         target->sending = false;
     }
+    /* One response is sent at a time: with Wi-Fi's memory short, two or
+     * more phones loading the page at once (with their captive-portal
+     * checks) ran it out. The others wait, their time limit not running. */
+    bool one_sending = false;
     for (Slot &s : slots) {
         if (!s.client) continue;
         if (s.sending) {
+            if (one_sending) {
+                s.since = millis();
+                continue;
+            }
+            one_sending = true;
             continue_send(s);
             continue;
         }
